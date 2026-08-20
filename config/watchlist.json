@@ -1,0 +1,22 @@
+{
+  "timezone": "America/Bogota",
+  "scan_interval_minutes": 5,
+  "watchlist": {
+    "sports": [
+      "tennis",
+      "football",
+      "nba"
+    ],
+    "competitions": [],
+    "teams": [],
+    "players": [],
+    "markets": []
+  },
+  "alerts": {
+    "enabled": true,
+    "minutes_before_start": [60, 10],
+    "minimum_confidence": 75,
+    "minimum_edge": 0.05,
+    "minimum_expected_value": 0.05
+  }
+}
