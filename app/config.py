@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from pydantic import BaseModel, Field
 
 
@@ -26,4 +29,13 @@ class EngineConfig(BaseModel):
     alerts: AlertConfig = Field(default_factory=AlertConfig)
 
 
-DEFAULT_CONFIG = EngineConfig()
+def load_config() -> EngineConfig:
+    path = Path(__file__).resolve().parent.parent / "config" / "watchlist.json"
+    if not path.exists():
+        return EngineConfig()
+
+    with path.open("r", encoding="utf-8") as file:
+        return EngineConfig.model_validate(json.load(file))
+
+
+DEFAULT_CONFIG = load_config()
