@@ -1,16 +1,24 @@
 {
   "timezone": "America/Bogota",
-  "scan_interval_minutes": 5,
+  "scan_interval_minutes": 10,
+  "watch_hours": 48,
   "watchlist": {
-    "sports": [
-      "tennis",
-      "football",
-      "nba"
+    "sports": ["tennis", "football", "nba"],
+    "competitions": [
+      "tennis_atp",
+      "tennis_wta",
+      "basketball_nba",
+      "soccer_uefa_champs_league",
+      "soccer_epl",
+      "soccer_spain_la_liga",
+      "soccer_italy_serie_a",
+      "soccer_germany_bundesliga",
+      "soccer_colombia_primera_a"
     ],
-    "competitions": [],
     "teams": [],
     "players": [],
-    "markets": []
+    "markets": ["h2h", "spreads", "totals"],
+    "bookmakers": ["Betano"]
   },
   "alerts": {
     "enabled": true,
