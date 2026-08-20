@@ -14,12 +14,14 @@ class WatchlistConfig(BaseModel):
     competitions: list[str] = Field(default_factory=list)
     teams: list[str] = Field(default_factory=list)
     players: list[str] = Field(default_factory=list)
-    markets: list[str] = Field(default_factory=list)
+    markets: list[str] = Field(default_factory=lambda: ["h2h", "spreads", "totals"])
+    bookmakers: list[str] = Field(default_factory=lambda: ["Betano"])
 
 
 class EngineConfig(BaseModel):
     timezone: str = "America/Bogota"
-    scan_interval_minutes: int = Field(default=5, ge=1, le=60)
+    scan_interval_minutes: int = Field(default=10, ge=1, le=60)
+    watch_hours: int = Field(default=48, ge=1, le=168)
     watchlist: WatchlistConfig = Field(default_factory=WatchlistConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
 
