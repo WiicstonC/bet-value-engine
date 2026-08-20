@@ -8,7 +8,7 @@ from app.core.value import (
     calculate_risk,
     classify_value,
 )
-from app.core.confidence import calculate_confidence, confidence_label
+from app.core.confidence import calculate_confidence
 
 
 app = FastAPI(
@@ -17,7 +17,7 @@ app = FastAPI(
         "Motor de análisis de valor para apuestas deportivas. "
         "No ejecuta apuestas automáticamente."
     ),
-    version="0.1.0",
+    version="0.1.1",
 )
 
 
@@ -25,7 +25,7 @@ app = FastAPI(
 def root():
     return {
         "name": "Bet Value Engine",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "status": "online",
         "message": "Value engine ready",
     }
@@ -33,59 +33,28 @@ def root():
 
 @app.get("/health")
 def health():
-    return {
-        "status": "healthy"
-    }
+    return {"status": "healthy"}
 
 
-@app.post(
-    "/analyze",
-    response_model=BetAnalysisResponse,
-)
+@app.post("/analyze", response_model=BetAnalysisResponse)
 def analyze_bet(request: BetAnalysisRequest):
-
     try:
         market_probability = implied_probability(request.odds)
-
-        edge = calculate_edge(
-            request.model_probability,
-            market_probability,
-        )
-
-        expected_value = calculate_expected_value(
-            request.model_probability,
-            request.odds,
-        )
-
-        confidence = calculate_confidence(
-            request.confidence_inputs
-        )
-
-        decision = classify_value(
-            edge,
-            expected_value,
-        )
-
-        risk = calculate_risk(
-            request.model_probability,
-            edge,
-            expected_value,
-        )
+        edge = calculate_edge(request.model_probability, market_probability)
+        expected_value = calculate_expected_value(request.model_probability, request.odds)
+        confidence = calculate_confidence(request.confidence_inputs)
+        decision = classify_value(edge, expected_value)
+        risk = calculate_risk(request.model_probability, edge, expected_value)
 
         reasons = []
-
         if edge > 0:
             reasons.append("La probabilidad del modelo supera la probabilidad implícita.")
-
         if expected_value > 0:
             reasons.append("El valor esperado es positivo.")
-
         if edge >= 0.10:
             reasons.append("Existe un edge significativo.")
-
         if confidence >= 80:
             reasons.append("El índice de confianza es alto.")
-
         if expected_value <= 0:
             reasons.append("El modelo no detecta valor esperado positivo.")
 
@@ -105,7 +74,4 @@ def analyze_bet(request: BetAnalysisRequest):
         )
 
     except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
+        raise HTTPException(status_code=400, detail=str(error))
