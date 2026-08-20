@@ -22,7 +22,7 @@
   },
   "alerts": {
     "enabled": true,
-    "minutes_before_start": [60, 10],
+    "minutes_before_start": [360, 60, 10],
     "minimum_confidence": 75,
     "minimum_edge": 0.05,
     "minimum_expected_value": 0.05
