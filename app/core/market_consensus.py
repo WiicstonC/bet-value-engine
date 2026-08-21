@@ -11,6 +11,14 @@ def _normalization_line(quote: MarketQuote) -> float | None:
     return quote.line
 
 
+def _is_excluded(bookmaker: str, excluded: str) -> bool:
+    bookmaker = bookmaker.lower().strip()
+    excluded = excluded.lower().strip()
+    if excluded == "betano":
+        return "betano" in bookmaker
+    return bookmaker == excluded or excluded in bookmaker
+
+
 def consensus_probabilities(
     quotes: list[MarketQuote],
     excluded_bookmaker: str = "Betano",
@@ -18,13 +26,14 @@ def consensus_probabilities(
     """Build a de-vigged consensus across independent bookmakers.
 
     Returns key -> (probability, bookmaker_count, dispersion).
-    For spreads, +X and -X are normalized together before de-vigging.
+    The target bookmaker is excluded so its own price does not manufacture
+    the reference probability used to calculate edge.
     """
     grouped: dict[tuple[str, float | None, str], list[float]] = defaultdict(list)
     by_bookmaker: dict[tuple[str, float | None], dict[tuple[str, str], float]] = defaultdict(dict)
 
     for quote in quotes:
-        if quote.bookmaker.lower() == excluded_bookmaker.lower():
+        if _is_excluded(quote.bookmaker, excluded_bookmaker):
             continue
         if quote.odds <= 1:
             continue
