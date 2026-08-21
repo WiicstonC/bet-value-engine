@@ -2,8 +2,20 @@ name: Bet Value Scanner
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Tipo de análisis manual"
+        required: true
+        default: "alert"
+        type: choice
+        options:
+          - alert
+          - full
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "3/10 * * * *"
+      timezone: "America/Bogota"
+    - cron: "0 6 * * *"
+      timezone: "America/Bogota"
 
 jobs:
   scan:
@@ -40,4 +52,11 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m scripts.scan
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "0 6 * * *" ]; then
+            python -m scripts.scan --full
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "full" ]; then
+            python -m scripts.scan --full
+          else
+            python -m scripts.scan
+          fi
