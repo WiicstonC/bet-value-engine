@@ -18,52 +18,39 @@ SPORT_KEYS = {
         "soccer_colombia_primera_a",
     ],
     "tennis": [
-        # Grand Slams
-        "tennis_atp_aus_open_singles",
-        "tennis_atp_french_open",
-        "tennis_atp_us_open",
-        "tennis_atp_wimbledon",
-        "tennis_wta_aus_open_singles",
-        "tennis_wta_french_open",
-        "tennis_wta_us_open",
-        "tennis_wta_wimbledon",
-        # ATP Masters / major ATP events
-        "tennis_atp_indian_wells",
-        "tennis_atp_miami_open",
-        "tennis_atp_monte_carlo_masters",
-        "tennis_atp_madrid_open",
-        "tennis_atp_italian_open",
-        "tennis_atp_canadian_open",
-        "tennis_atp_cincinnati_open",
-        "tennis_atp_shanghai_masters",
-        "tennis_atp_paris_masters",
-        "tennis_atp_china_open",
-        "tennis_atp_barcelona_open",
-        "tennis_atp_halle_open",
-        "tennis_atp_queens_club_champ",
-        "tennis_atp_washington_open",
-        "tennis_atp_dubai",
-        "tennis_atp_qatar_open",
-        "tennis_atp_hamburg_open",
-        "tennis_atp_munich",
-        # WTA 1000 / major WTA events
-        "tennis_wta_indian_wells",
-        "tennis_wta_miami_open",
-        "tennis_wta_madrid_open",
-        "tennis_wta_italian_open",
-        "tennis_wta_canadian_open",
-        "tennis_wta_cincinnati_open",
-        "tennis_wta_china_open",
-        "tennis_wta_dubai",
-        "tennis_wta_qatar_open",
-        "tennis_wta_bad_homburg_open",
-        "tennis_wta_charleston_open",
-        "tennis_wta_german_open",
-        "tennis_wta_queens_club_champ",
-        "tennis_wta_strasbourg",
-        "tennis_wta_stuttgart_open",
-        "tennis_wta_washington_open",
-        "tennis_wta_wuhan_open",
+        "tennis_atp_aus_open_singles", "tennis_atp_french_open", "tennis_atp_us_open",
+        "tennis_atp_wimbledon", "tennis_atp_indian_wells", "tennis_atp_miami_open",
+        "tennis_atp_monte_carlo_masters", "tennis_atp_madrid_open", "tennis_atp_italian_open",
+        "tennis_atp_canadian_open", "tennis_atp_cincinnati_open", "tennis_atp_shanghai_masters",
+        "tennis_atp_paris_masters", "tennis_atp_china_open", "tennis_atp_barcelona_open",
+        "tennis_atp_halle_open", "tennis_atp_queens_club_champ", "tennis_atp_washington_open",
+        "tennis_atp_dubai", "tennis_atp_qatar_open", "tennis_atp_hamburg_open", "tennis_atp_munich",
+        "tennis_wta_aus_open_singles", "tennis_wta_french_open", "tennis_wta_us_open",
+        "tennis_wta_wimbledon", "tennis_wta_indian_wells", "tennis_wta_miami_open",
+        "tennis_wta_madrid_open", "tennis_wta_italian_open", "tennis_wta_canadian_open",
+        "tennis_wta_cincinnati_open", "tennis_wta_china_open", "tennis_wta_dubai",
+        "tennis_wta_qatar_open", "tennis_wta_bad_homburg_open", "tennis_wta_charleston_open",
+        "tennis_wta_german_open", "tennis_wta_queens_club_champ", "tennis_wta_strasbourg",
+        "tennis_wta_stuttgart_open", "tennis_wta_washington_open", "tennis_wta_wuhan_open",
+    ],
+}
+
+# Up to 10 bookmaker keys count as one region in The Odds API.
+# Betano is included through its currently documented UK key. The actual
+# availability of Betano varies by sport and market, so the scanner also
+# accepts bookmaker titles containing "Betano".
+BOOKMAKERS_BY_SPORT = {
+    "nba": [
+        "betano_uk", "pinnacle", "betfair_ex_uk", "williamhill",
+        "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
+    ],
+    "football": [
+        "betano_uk", "pinnacle", "betfair_ex_uk", "williamhill",
+        "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
+    ],
+    "tennis": [
+        "betano_uk", "pinnacle", "betfair_ex_uk", "williamhill",
+        "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
     ],
 }
 
@@ -74,12 +61,28 @@ class TheOddsAPIProvider(SportsProvider):
         if not self.api_key:
             raise RuntimeError("Falta ODDS_API_KEY en las variables de entorno.")
         self.base_url = "https://api.the-odds-api.com/v4"
+        self._odds_cache: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
+        self.last_quota_remaining: str | None = None
+        self.last_quota_used: str | None = None
 
     def _get(self, path: str, params: dict) -> list[dict]:
         params = {**params, "apiKey": self.api_key}
-        response = httpx.get(f"{self.base_url}{path}", params=params, timeout=20)
+        response = httpx.get(f"{self.base_url}{path}", params=params, timeout=25)
+        self.last_quota_remaining = response.headers.get("x-requests-remaining")
+        self.last_quota_used = response.headers.get("x-requests-used")
         response.raise_for_status()
         return response.json()
+
+    @staticmethod
+    def _bookmaker_matches(title: str, wanted: str) -> bool:
+        title = title.lower().strip()
+        wanted = wanted.lower().strip()
+        if wanted == "betano":
+            return "betano" in title
+        return title == wanted or wanted in title
+
+    def _bookmaker_keys(self, sport: str) -> list[str]:
+        return BOOKMAKERS_BY_SPORT.get(sport, BOOKMAKERS_BY_SPORT["football"])
 
     def upcoming_events(self, sport: str, start: datetime, end: datetime) -> list[Event]:
         events: list[Event] = []
@@ -89,8 +92,6 @@ class TheOddsAPIProvider(SportsProvider):
             try:
                 data = self._get(f"/sports/{sport_key}/events", {})
             except httpx.HTTPStatusError:
-                # Un torneo fuera de temporada puede dejar de estar disponible.
-                # No debemos tumbar todo el escaneo por una competición inactiva.
                 continue
 
             for item in data:
@@ -112,12 +113,21 @@ class TheOddsAPIProvider(SportsProvider):
         return events
 
     def quotes(self, event: Event, markets: list[str]) -> list[MarketQuote]:
-        data = self._get(f"/sports/{event.competition}/odds", {
-            "regions": "eu",
-            "markets": ",".join(markets or ["h2h", "spreads", "totals"]),
-            "oddsFormat": "decimal",
-        })
+        market_keys = tuple(sorted(set(markets or ["h2h"])))
+        cache_key = (event.competition, market_keys)
+
+        if cache_key not in self._odds_cache:
+            data = self._get(f"/sports/{event.competition}/odds", {
+                "regions": "uk",
+                "bookmakers": ",".join(self._bookmaker_keys(event.sport)),
+                "markets": ",".join(market_keys),
+                "oddsFormat": "decimal",
+            })
+            self._odds_cache[cache_key] = data
+
+        data = self._odds_cache[cache_key]
         quotes: list[MarketQuote] = []
+
         for item in data:
             if item.get("id") != event.id:
                 continue
