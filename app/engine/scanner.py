@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from app.config import EngineConfig
@@ -19,6 +20,7 @@ class Scanner:
         self.deep_events_with_markets = 0
         self.deep_markets_requested = 0
         self.deep_quotes_received = 0
+        self.deep_market_hits: Counter[str] = Counter()
 
     @staticmethod
     def _consensus_key(quote: MarketQuote) -> tuple[str, float | None, str]:
@@ -151,6 +153,9 @@ class Scanner:
 
         self.deep_events_with_markets += 1
         self.deep_markets_requested += len(markets)
+        for market in markets:
+            self.deep_market_hits[market] += 1
+
         try:
             quotes = self.provider.event_quotes(event, markets)
         except Exception as exc:
@@ -191,9 +196,6 @@ class Scanner:
                 for target in self.config.watchlist.bookmakers:
                     candidates.extend(self._evaluate_quotes(event, quotes, target))
 
-        # Stage 2: discover specialized markets only close to kickoff. The
-        # discovery endpoint tells us which markets exist before we spend odds
-        # quota. We also cap the number of events examined per run.
         if self.config.deep_scan.enabled:
             eligible = [
                 event for event in all_events
@@ -206,7 +208,6 @@ class Scanner:
                     continue
                 candidates.extend(self._deep_scan_event(event, start))
 
-        # Remove exact duplicates produced by featured/deep stages.
         unique: dict[tuple[str, str, str, float | None, str], Candidate] = {}
         for candidate in candidates:
             key = (
