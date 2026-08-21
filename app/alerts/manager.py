@@ -16,7 +16,6 @@ def format_candidate(candidate: Candidate, timezone_name: str = "America/Bogota"
     quote = candidate.quote
     line = f" {quote.line}" if quote.line is not None else ""
     local_start = _local_start(event, timezone_name)
-
     return (
         "🎯 BET VALUE ALERT\n\n"
         f"{event.sport.upper()} — {event.home} vs {event.away}\n"
@@ -37,68 +36,70 @@ def format_candidate(candidate: Candidate, timezone_name: str = "America/Bogota"
     )
 
 
-def format_live_candidate(candidate: Candidate, timezone_name: str = "America/Bogota") -> str:
+def format_live_candidate(candidate: Candidate, timezone_name: str = "America/Bogota", incident_text: str | None = None) -> str:
     event = candidate.event
     quote = candidate.quote
     line = f" {quote.line}" if quote.line is not None else ""
+    incident = f"\n⚡ Evento detectado: {incident_text}\n" if incident_text else ""
     return (
         "🚨 OPORTUNIDAD EN VIVO\n\n"
         f"{event.sport.upper()} — {event.home} vs {event.away}\n"
         f"Comenzó: {_local_start(event, timezone_name)}\n"
         f"Mercado: {quote.market}{line}\n"
         f"Selección: {quote.selection}\n"
-        f"Cuota Betano: {quote.odds:.2f}\n\n"
+        f"Cuota Betano: {quote.odds:.2f}\n"
+        f"{incident}\n"
         f"Probabilidad consenso: {candidate.model_probability:.2%}\n"
         f"Edge: {candidate.edge:.2%}\n"
         f"EV: {candidate.expected_value:.2%}\n"
         f"Confianza: {candidate.confidence:.1f}/100\n"
         f"Casas independientes: {candidate.consensus_bookmakers}\n\n"
-        "⚠️ El motor detectó valor con el mercado actual. Confirma el marcador, tiempo de juego y novedades del partido antes de apostar."
+        "⚠️ Confirma marcador, tiempo y novedades antes de apostar."
     )
 
 
-def format_daily_digest(events: list[Event], timezone_name: str, max_events: int = 45) -> list[str]:
-    """Build Telegram messages containing events only; no odds requests are made here."""
+def format_daily_digest(events: list[Event], timezone_name: str, max_events: int = 45, preanalysis: dict[str, str] | None = None) -> list[str]:
     local_tz = ZoneInfo(timezone_name)
-    grouped: dict[tuple[str, str], list[Event]] = defaultdict(list)
-    for event in events:
-        local = event.start_time.astimezone(local_tz)
-        grouped[(local.strftime("%d/%m"), event.competition)].append(event)
-
-    ordered = sorted(
-        events,
-        key=lambda event: event.start_time,
-    )[:max_events]
+    ordered = sorted(events, key=lambda event: event.start_time)[:max_events]
     total = len(events)
     lines = [
-        "📅 AGENDA DEPORTIVA DEL DÍA",
+        "📅 AGENDA + PREANÁLISIS DEPORTIVO",
         "",
         f"Eventos encontrados: {total}",
-        "Sin análisis de cuotas todavía: 0 créditos de odds gastados por este mensaje.",
+        "Cuotas NO consultadas en esta fase: 0 créditos de Odds API.",
         "",
     ]
 
+    if preanalysis:
+        lines += ["🧠 PARTIDOS QUE MERECEN ESTUDIO", ""]
+        selected = sorted(
+            ((event, preanalysis[event.id]) for event in ordered if event.id in preanalysis),
+            key=lambda pair: pair[0].start_time,
+        )
+        for event, analysis in selected:
+            local = event.start_time.astimezone(local_tz)
+            lines.append(f"🔎 {local.strftime('%d/%m %H:%M')} | {event.sport.upper()} | {event.home} vs {event.away}")
+            lines.append(f"ID: {event.id}")
+            lines.append(analysis)
+            lines.append("👉 Si te interesa, usa este ID para análisis profundo y recién ahí consultamos mercados/cuotas.\n")
+
+    lines += ["📋 RESTO DE LA AGENDA", ""]
     for event in ordered:
         local = event.start_time.astimezone(local_tz)
         lines.append(
-            f"• {local.strftime('%d/%m %H:%M')} | {event.sport.upper()} | "
-            f"{event.home} vs {event.away} | {event.competition} | ID {event.id}"
+            f"• {local.strftime('%d/%m %H:%M')} | {event.sport.upper()} | {event.home} vs {event.away} | {event.competition} | ID {event.id}"
         )
 
     if total > max_events:
-        lines.append("")
-        lines.append(f"…y {total - max_events} eventos más. Usa el ID de un evento para solicitar análisis profundo.")
-
-    header = "\n".join(lines)
-    if len(header) <= 3900:
-        return [header]
+        lines += ["", f"…y {total - max_events} eventos más."]
 
     chunks: list[str] = []
     current = ""
     for line in lines:
         candidate = f"{current}\n{line}" if current else line
         if len(candidate) > 3900:
-            chunks.append(current)
+            if current:
+                chunks.append(current)
             current = line
         else:
             current = candidate
@@ -130,17 +131,13 @@ class AlertManager:
                 sent += 1
         return sent
 
-    def notify_live(self, candidates: list[Candidate]) -> int:
+    def notify_live(self, candidates: list[Candidate], incident_text: str | None = None) -> int:
         sent = 0
         for candidate in candidates[: self.config.live.max_alerts_per_run]:
-            if self.sender.send(format_live_candidate(candidate, self.config.timezone)):
+            if self.sender.send(format_live_candidate(candidate, self.config.timezone, incident_text)):
                 sent += 1
         return sent
 
-    def send_daily_digest(self, events: list[Event]) -> int:
-        messages = format_daily_digest(
-            events,
-            self.config.timezone,
-            self.config.daily_digest.max_events_per_message,
-        )
+    def send_daily_digest(self, events: list[Event], preanalysis: dict[str, str] | None = None) -> int:
+        messages = format_daily_digest(events, self.config.timezone, self.config.daily_digest.max_events_per_message, preanalysis)
         return self.sender.send_many(messages)
