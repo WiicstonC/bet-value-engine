@@ -32,6 +32,7 @@ jobs:
         run: |
           python -c "import os; print('ODDS_API_KEY:', bool(os.getenv('ODDS_API_KEY'))); print('TELEGRAM_BOT_TOKEN:', bool(os.getenv('TELEGRAM_BOT_TOKEN'))); print('TELEGRAM_CHAT_ID:', bool(os.getenv('TELEGRAM_CHAT_ID')))"
           python -m compileall -q app scripts
+          python -m scripts.preflight
 
       - name: Run scanner
         env:
