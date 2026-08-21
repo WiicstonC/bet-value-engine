@@ -1,18 +1,13 @@
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from statistics import median
 
 from app.config import EngineConfig
+from app.core.confidence import calculate_confidence
+from app.core.market_consensus import consensus_probabilities
+from app.core.probability import implied_probability
+from app.core.value import calculate_edge, calculate_expected_value, classify_value
 from app.engine.filters import market_allowed, matches_watchlist
 from app.models import Candidate, MarketQuote
 from app.providers.base import SportsProvider
-from app.core.confidence import calculate_confidence
-from app.core.probability import implied_probability
-from app.core.value import calculate_edge, calculate_expected_value, classify_value
-
-
-def _key(quote: MarketQuote) -> tuple[str, str, str, float | None]:
-    return (quote.event_id, quote.market, quote.selection, quote.line)
 
 
 class Scanner:
@@ -26,73 +21,68 @@ class Scanner:
         candidates: list[Candidate] = []
 
         for sport in self.config.watchlist.sports:
-            for event in self.provider.upcoming_events(sport, start, end):
+            events = self.provider.upcoming_events(sport, start, end)
+            for event in events:
                 if not matches_watchlist(event, self.config.watchlist):
                     continue
 
                 quotes = [
-                    q for q in self.provider.quotes(event, self.config.watchlist.markets)
+                    q
+                    for q in self.provider.quotes(event, self.config.watchlist.markets)
                     if market_allowed(q, self.config.watchlist.markets)
                 ]
                 if not quotes:
                     continue
 
-                groups: dict[tuple[str, str, float | None], list[MarketQuote]] = defaultdict(list)
-                for quote in quotes:
-                    groups[(quote.market, quote.selection, quote.line)].append(quote)
+                target_books = {b.lower() for b in self.config.watchlist.bookmakers}
+                target_quotes = [q for q in quotes if q.bookmaker.lower() in target_books]
+                if not target_quotes:
+                    continue
 
-                for _, market_quotes in groups.items():
-                    target_quotes = [
-                        q for q in market_quotes
-                        if any(q.bookmaker.lower() == b.lower() for b in self.config.watchlist.bookmakers)
-                    ]
-                    if not target_quotes:
+                consensus = consensus_probabilities(quotes, excluded_bookmaker=next(iter(target_books), "betano"))
+
+                for quote in target_quotes:
+                    key = (quote.market.lower(), quote.line, quote.selection.lower())
+                    consensus_data = consensus.get(key)
+                    if not consensus_data:
                         continue
 
-                    other_books = [
-                        implied_probability(q.odds)
-                        for q in market_quotes
-                        if all(q.bookmaker.lower() != b.lower() for b in self.config.watchlist.bookmakers)
-                    ]
-                    if not other_books:
-                        continue
+                    model_probability, bookmaker_count, dispersion = consensus_data
+                    implied = implied_probability(quote.odds)
+                    edge = calculate_edge(model_probability, implied)
+                    ev = calculate_expected_value(model_probability, quote.odds)
 
-                    # Primera capa real del motor: compara Betano contra el consenso
-                    # de las demás casas. Esto es line-shopping, no un modelo estadístico.
-                    consensus_probability = median(other_books)
+                    # Confianza de la capa de mercado. No se presenta como certeza:
+                    # se eleva con más casas independientes, menor dispersión y mayor edge.
+                    book_quality = min(bookmaker_count / 5.0, 1.0)
+                    agreement = max(0.0, 1.0 - dispersion * 5.0)
+                    edge_quality = min(max(edge * 4.0, 0.0), 1.0)
+                    confidence = calculate_confidence({
+                        "statistics": 0.70,
+                        "edge": edge_quality,
+                        "form": 0.60,
+                        "context": 0.60,
+                        "market": min(0.65 + book_quality * 0.35, 1.0),
+                        "data_quality": book_quality,
+                        "uncertainty": agreement,
+                    })
 
-                    for quote in target_quotes:
-                        market_probability = implied_probability(quote.odds)
-                        edge = calculate_edge(consensus_probability, market_probability)
-                        ev = calculate_expected_value(consensus_probability, quote.odds)
+                    decision = classify_value(edge, ev)
 
-                        # Sin modelo deportivo independiente, la confianza queda limitada.
-                        confidence = calculate_confidence({
-                            "statistics": 0.50,
-                            "edge": min(max(edge * 5, 0.0), 1.0),
-                            "form": 0.50,
-                            "context": 0.50,
-                            "market": 0.90,
-                            "data_quality": 0.80,
-                            "uncertainty": 0.30,
-                        })
-
-                        decision = classify_value(edge, ev)
-
-                        if (
-                            confidence >= self.config.alerts.minimum_confidence
-                            and edge >= self.config.alerts.minimum_edge
-                            and ev >= self.config.alerts.minimum_expected_value
-                        ):
-                            candidates.append(Candidate(
-                                event=event,
-                                quote=quote,
-                                model_probability=consensus_probability,
-                                implied_probability=market_probability,
-                                edge=edge,
-                                expected_value=ev,
-                                confidence=confidence,
-                                decision=decision,
-                            ))
+                    if (
+                        confidence >= self.config.alerts.minimum_confidence
+                        and edge >= self.config.alerts.minimum_edge
+                        and ev >= self.config.alerts.minimum_expected_value
+                    ):
+                        candidates.append(Candidate(
+                            event=event,
+                            quote=quote,
+                            model_probability=model_probability,
+                            implied_probability=implied,
+                            edge=edge,
+                            expected_value=ev,
+                            confidence=confidence,
+                            decision=decision,
+                        ))
 
         return candidates
