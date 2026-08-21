@@ -1,4 +1,5 @@
 from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -30,3 +31,5 @@ class Candidate(BaseModel):
     expected_value: float
     confidence: float
     decision: str
+    consensus_bookmakers: int = 0
+    consensus_dispersion: float = 0.0
