@@ -6,7 +6,7 @@ from app.core.market_consensus import consensus_probabilities
 from app.core.probability import implied_probability
 from app.core.value import calculate_edge, calculate_expected_value, classify_value
 from app.engine.filters import market_allowed, matches_watchlist
-from app.models import Candidate, MarketQuote
+from app.models import Candidate
 from app.providers.base import SportsProvider
 
 
@@ -14,6 +14,13 @@ class Scanner:
     def __init__(self, provider: SportsProvider, config: EngineConfig):
         self.provider = provider
         self.config = config
+
+    @staticmethod
+    def _consensus_key(quote) -> tuple[str, float | None, str]:
+        line = quote.line
+        if line is not None and quote.market.lower() == "spreads":
+            line = abs(line)
+        return (quote.market.lower(), line, quote.selection.lower())
 
     def scan(self, start: datetime | None = None, hours: int | None = None) -> list[Candidate]:
         start = start or datetime.now(timezone.utc)
@@ -39,50 +46,49 @@ class Scanner:
                 if not target_quotes:
                     continue
 
-                consensus = consensus_probabilities(quotes, excluded_bookmaker=next(iter(target_books), "betano"))
+                for target_book in target_books:
+                    consensus = consensus_probabilities(quotes, excluded_bookmaker=target_book)
 
-                for quote in target_quotes:
-                    key = (quote.market.lower(), quote.line, quote.selection.lower())
-                    consensus_data = consensus.get(key)
-                    if not consensus_data:
-                        continue
+                    for quote in target_quotes:
+                        key = self._consensus_key(quote)
+                        consensus_data = consensus.get(key)
+                        if not consensus_data:
+                            continue
 
-                    model_probability, bookmaker_count, dispersion = consensus_data
-                    implied = implied_probability(quote.odds)
-                    edge = calculate_edge(model_probability, implied)
-                    ev = calculate_expected_value(model_probability, quote.odds)
+                        model_probability, bookmaker_count, dispersion = consensus_data
+                        implied = implied_probability(quote.odds)
+                        edge = calculate_edge(model_probability, implied)
+                        ev = calculate_expected_value(model_probability, quote.odds)
 
-                    # Confianza de la capa de mercado. No se presenta como certeza:
-                    # se eleva con más casas independientes, menor dispersión y mayor edge.
-                    book_quality = min(bookmaker_count / 5.0, 1.0)
-                    agreement = max(0.0, 1.0 - dispersion * 5.0)
-                    edge_quality = min(max(edge * 4.0, 0.0), 1.0)
-                    confidence = calculate_confidence({
-                        "statistics": 0.70,
-                        "edge": edge_quality,
-                        "form": 0.60,
-                        "context": 0.60,
-                        "market": min(0.65 + book_quality * 0.35, 1.0),
-                        "data_quality": book_quality,
-                        "uncertainty": agreement,
-                    })
+                        book_quality = min(bookmaker_count / 5.0, 1.0)
+                        agreement = max(0.0, 1.0 - dispersion * 5.0)
+                        edge_quality = min(max(edge * 4.0, 0.0), 1.0)
+                        confidence = calculate_confidence({
+                            "statistics": 0.70,
+                            "edge": edge_quality,
+                            "form": 0.60,
+                            "context": 0.60,
+                            "market": min(0.65 + book_quality * 0.35, 1.0),
+                            "data_quality": book_quality,
+                            "uncertainty": agreement,
+                        })
 
-                    decision = classify_value(edge, ev)
+                        decision = classify_value(edge, ev)
 
-                    if (
-                        confidence >= self.config.alerts.minimum_confidence
-                        and edge >= self.config.alerts.minimum_edge
-                        and ev >= self.config.alerts.minimum_expected_value
-                    ):
-                        candidates.append(Candidate(
-                            event=event,
-                            quote=quote,
-                            model_probability=model_probability,
-                            implied_probability=implied,
-                            edge=edge,
-                            expected_value=ev,
-                            confidence=confidence,
-                            decision=decision,
-                        ))
+                        if (
+                            confidence >= self.config.alerts.minimum_confidence
+                            and edge >= self.config.alerts.minimum_edge
+                            and ev >= self.config.alerts.minimum_expected_value
+                        ):
+                            candidates.append(Candidate(
+                                event=event,
+                                quote=quote,
+                                model_probability=model_probability,
+                                implied_probability=implied,
+                                edge=edge,
+                                expected_value=ev,
+                                confidence=confidence,
+                                decision=decision,
+                            ))
 
         return candidates
