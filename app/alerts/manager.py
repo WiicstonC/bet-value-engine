@@ -92,7 +92,7 @@ def format_live_candidate(candidate: Candidate, timezone_name: str = "America/Bo
     )
 
 
-def _chunk_text(lines: list[str], limit: int = 3900) -> list[str]:
+def _chunk_text(lines: list[str], limit: int = 3500) -> list[str]:
     chunks, current = [], ""
     for line in lines:
         candidate = f"{current}\n{line}" if current else line
@@ -107,17 +107,26 @@ def _chunk_text(lines: list[str], limit: int = 3900) -> list[str]:
     return chunks
 
 
+def _chunk_message_with_markup(message: str, markup: dict[str, Any] | None, limit: int = 3500) -> list[tuple[str, dict[str, Any] | None]]:
+    """Telegram sendMessage has a 4096-char limit. Keep the action button on the final chunk."""
+    if len(message) <= limit:
+        return [(message, markup)]
+    lines = message.splitlines()
+    chunks = _chunk_text(lines, limit)
+    return [(chunk, markup if index == len(chunks) - 1 else None) for index, chunk in enumerate(chunks)]
+
+
 def format_daily_digest(events: list[Event], timezone_name: str, max_events: int = 45, preanalysis: dict[str, str] | None = None) -> tuple[list[str], list[dict[str, Any] | None]]:
     """Build compact Telegram cards. Selected events get their own deep-analysis button."""
     local_tz = ZoneInfo(timezone_name)
     ordered = sorted(events, key=lambda event: event.start_time)[:max_events]
     total = len(events)
-    messages = [
-        "📅 AGENDA DEPORTIVA",
+    messages: list[str] = [
+        "📅 AGENDA DEPORTIVA — RESTO DEL DÍA",
         "",
         f"Eventos encontrados: {total}",
         "🧠 Preanálisis cualitativo: activo",
-        "💳 Cuotas todavía NO consultadas para estos eventos.",
+        "💳 Cuotas todavía NO consultadas.",
     ]
     markups: list[dict[str, Any] | None] = [None]
     selected_ids: set[str] = set()
@@ -132,7 +141,7 @@ def format_daily_digest(events: list[Event], timezone_name: str, max_events: int
                 f"{event.sport.upper()} | {event.home} vs {event.away}\n"
                 f"🕒 {local.strftime('%d/%m %H:%M')} Colombia\n\n"
                 f"{analysis}\n\n"
-                "💡 El preanálisis decide si vale la pena gastar un crédito en mercados/cuotas."
+                "💡 Solo el botón de análisis profundo autoriza el consumo de créditos."
             )
             markups.append(deep_button(event))
 
@@ -186,4 +195,11 @@ class AlertManager:
 
     def send_daily_digest(self, events: list[Event], preanalysis: dict[str, str] | None = None) -> int:
         messages, markups = format_daily_digest(events, self.config.timezone, self.config.daily_digest.max_events_per_message, preanalysis)
-        return self.sender.send_many(messages, markups)
+        expanded_messages: list[str] = []
+        expanded_markups: list[dict[str, Any] | None] = []
+        for message, markup in zip(messages, markups):
+            parts = _chunk_message_with_markup(message, markup)
+            for part_message, part_markup in parts:
+                expanded_messages.append(part_message)
+                expanded_markups.append(part_markup)
+        return self.sender.send_many(expanded_messages, expanded_markups)
