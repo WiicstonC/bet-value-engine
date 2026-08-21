@@ -1,4 +1,4 @@
-from app.alerts.manager import AlertManager
+from app.alerts.manager import AlertManager, format_live_candidate
 from app.alerts.telegram import TelegramAlertSender
 from app.config import DEFAULT_CONFIG
 from app.engine.scanner import Scanner
@@ -62,14 +62,12 @@ def main() -> None:
     if odds_provider.last_quota_last is not None:
         print(f"Costo de la última consulta: {odds_provider.last_quota_last}")
 
-    manager = AlertManager(TelegramAlertSender(), config)
     sent = 0
-    for candidate, shock in alerts:
+    sender = TelegramAlertSender()
+    for candidate, shock in alerts[: config.live.max_alerts_per_run]:
         incident_text = next((incident.description for incident, event in triggered if event.id == candidate.event.id), None)
-        if manager.sender.send(manager.sender_message if False else __import__('app.alerts.manager', fromlist=['format_live_candidate']).format_live_candidate(candidate, config.timezone, incident_text)):
+        if sender.send(format_live_candidate(candidate, config.timezone, incident_text)):
             sent += 1
-        if sent >= config.live.max_alerts_per_run:
-            break
     print(f"Alertas Telegram enviadas: {sent}")
 
     for incident, event in triggered:
