@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime
 
 import httpx
@@ -13,10 +14,10 @@ MODEL = os.getenv("OPENAI_PREANALYSIS_MODEL", "gpt-5.6-luna")
 def _fallback(event: Event) -> str:
     sport = event.sport.lower()
     if sport == "tennis":
-        return "🎾 Partido para vigilar. Antes de tocar ganador conviene revisar servicio, devolución, superficie y mercados de juegos/sets; la cuota decidirá si existe valor."
+        return "🎾 VIGILAR. Antes de elegir ganador, revisar superficie, forma reciente, servicio/devolución, fatiga y H2H. Si el partido es parejo, juegos/sets, aces o dobles faltas pueden ofrecer mejor valor."
     if sport == "nba":
-        return "🏀 Partido para vigilar. El mercado de ganador no será nuestra única opción: si el juego es parejo, conviene buscar puntos, rebotes, asistencias o triples después de revisar contexto y cuotas."
-    return "⚽ Partido para vigilar. No asumimos ganador todavía; primero conviene revisar contexto, ritmo, goles, córners y tarjetas para encontrar el mercado con mayor probabilidad."
+        return "🏀 VIGILAR. No limitarse al ganador: revisar ritmo, lesiones, minutos y matchup. Si el resultado es cerrado, puntos, rebotes, asistencias y triples pueden ser mercados más interesantes."
+    return "⚽ VIGILAR. No asumir ganador. Revisar forma, bajas, local/visitante y contexto; después comparar goles, córners, tarjetas, tiros y tiros a puerta para encontrar el mercado con mejor perfil."
 
 
 def _output_text(data: dict) -> str:
@@ -30,6 +31,30 @@ def _output_text(data: dict) -> str:
     return "\n".join(parts).strip()
 
 
+def _request(body: dict, api_key: str) -> httpx.Response:
+    last: httpx.Response | None = None
+    for attempt in range(3):
+        response = httpx.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=body,
+            timeout=90,
+        )
+        last = response
+        if response.status_code != 429:
+            response.raise_for_status()
+            return response
+        retry_after = response.headers.get("retry-after")
+        try:
+            delay = min(max(float(retry_after), 2.0), 20.0) if retry_after else 4.0 * (attempt + 1)
+        except ValueError:
+            delay = 4.0 * (attempt + 1)
+        time.sleep(delay)
+    assert last is not None
+    last.raise_for_status()
+    return last
+
+
 def generate_preanalysis(events: list[Event], max_events: int = 10) -> dict[str, str]:
     """Generate a qualitative shortlist without spending Odds API credits."""
     if not events:
@@ -40,13 +65,14 @@ def generate_preanalysis(events: list[Event], max_events: int = 10) -> dict[str,
         return {event.id: _fallback(event) for event in events[:max_events]}
 
     valid_ids = {event.id for event in events}
+    # Send only a bounded event list to the AI; the complete agenda is still sent to Telegram.
     payload_events = [
         {"id": e.id, "sport": e.sport, "competition": e.competition, "home": e.home, "away": e.away, "start_utc": e.start_time.isoformat()}
-        for e in events
+        for e in events[:min(len(events), 30)]
     ]
 
     prompt = f"""
-Eres el analista principal de un motor privado de apuestas deportivas. Tu trabajo en esta etapa NO es recomendar una apuesta ni inventar probabilidades. Debes hacer un preanálisis cualitativo para decidir qué partidos merecen gastar créditos en una consulta profunda de mercados.
+Eres el analista principal de un motor privado de apuestas deportivas. En esta etapa NO recomiendas una apuesta ni inventas probabilidades. Haces un preanálisis cualitativo para decidir qué partidos merecen gastar créditos en una consulta profunda de mercados.
 
 Hoy es {datetime.utcnow().date().isoformat()}.
 Reglas:
@@ -100,13 +126,7 @@ EVENTOS:
     }
 
     try:
-        response = httpx.post(
-            "https://api.openai.com/v1/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-            timeout=90,
-        )
-        response.raise_for_status()
+        response = _request(body, api_key)
         parsed = json.loads(_output_text(response.json()))
         result: dict[str, str] = {}
         for item in parsed.get("events", []):
@@ -118,10 +138,10 @@ EVENTOS:
             markets = ", ".join(item.get("markets_to_check", [])[:5])
             result[event_id] = (
                 f"🧠 {item.get('preanalysis', '').strip()}\n"
-                f"Mercados a revisar: {markets or 'descubrir en análisis profundo'}\n"
+                f"🔥 Mercados a vigilar: {markets or 'descubrir en análisis profundo'}\n"
                 f"Motivo: {item.get('reason', '').strip()}"
             )
         return result
     except Exception as exc:
-        print(f"AI preanalysis unavailable: {exc}")
+        print(f"AI preanalysis unavailable after retries: {exc}")
         return {event.id: _fallback(event) for event in events[:max_events]}
