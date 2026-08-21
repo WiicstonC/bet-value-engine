@@ -42,8 +42,7 @@ class Scanner:
                     continue
 
                 quotes = [
-                    q
-                    for q in self.provider.quotes(event, self.config.watchlist.markets)
+                    q for q in self.provider.quotes(event, self.config.watchlist.markets)
                     if market_allowed(q, self.config.watchlist.markets)
                 ]
                 if not quotes:
@@ -67,8 +66,7 @@ class Scanner:
                     consensus = consensus_probabilities(quotes, excluded_bookmaker=target)
 
                     for quote in target_specific:
-                        key = self._consensus_key(quote)
-                        consensus_data = consensus.get(key)
+                        consensus_data = consensus.get(self._consensus_key(quote))
                         if not consensus_data:
                             continue
 
@@ -92,7 +90,6 @@ class Scanner:
                             "data_quality": book_quality,
                             "uncertainty": agreement,
                         })
-
                         decision = classify_value(edge, ev)
 
                         if (
@@ -113,14 +110,10 @@ class Scanner:
                                 consensus_dispersion=dispersion,
                             ))
 
-        # Rank the strongest opportunities first and cap alerts per scan.
+        # Keep every eligible candidate here. The alert manager applies the
+        # time window first and only then limits the number of notifications.
         candidates.sort(
-            key=lambda c: (
-                c.confidence,
-                c.edge,
-                c.expected_value,
-                c.consensus_bookmakers,
-            ),
+            key=lambda c: (c.confidence, c.edge, c.expected_value, c.consensus_bookmakers),
             reverse=True,
         )
-        return candidates[: self.config.alerts.max_alerts_per_scan]
+        return candidates
