@@ -14,6 +14,14 @@ class AlertConfig(BaseModel):
     max_alerts_per_scan: int = Field(default=5, ge=1, le=20)
 
 
+class DeepScanConfig(BaseModel):
+    enabled: bool = True
+    minutes_before_start: int = 60
+    max_events_per_run: int = Field(default=8, ge=1, le=30)
+    max_markets_per_event: int = Field(default=6, ge=1, le=20)
+    only_if_target_bookmaker_has_market: bool = True
+
+
 class WatchlistConfig(BaseModel):
     sports: list[str] = Field(default_factory=lambda: ["tennis", "football", "nba"])
     competitions: list[str] = Field(default_factory=list)
@@ -29,6 +37,7 @@ class EngineConfig(BaseModel):
     watch_hours: int = Field(default=48, ge=1, le=168)
     watchlist: WatchlistConfig = Field(default_factory=WatchlistConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
+    deep_scan: DeepScanConfig = Field(default_factory=DeepScanConfig)
 
 
 def load_config() -> EngineConfig:
