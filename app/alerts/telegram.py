@@ -24,3 +24,10 @@ class TelegramAlertSender:
         )
         response.raise_for_status()
         return True
+
+    def send_many(self, messages: list[str]) -> int:
+        sent = 0
+        for message in messages:
+            if self.send(message):
+                sent += 1
+        return sent
