@@ -6,7 +6,8 @@ from app.core.market_consensus import consensus_probabilities
 from app.core.probability import implied_probability
 from app.core.value import calculate_edge, calculate_expected_value, classify_value
 from app.engine.filters import market_allowed, matches_watchlist
-from app.models import Candidate
+from app.engine.market_catalog import select_deep_markets
+from app.models import Candidate, Event, MarketQuote
 from app.providers.base import SportsProvider
 
 
@@ -14,11 +15,15 @@ class Scanner:
     def __init__(self, provider: SportsProvider, config: EngineConfig):
         self.provider = provider
         self.config = config
+        self.deep_events_considered = 0
+        self.deep_events_with_markets = 0
+        self.deep_markets_requested = 0
+        self.deep_quotes_received = 0
 
     @staticmethod
-    def _consensus_key(quote) -> tuple[str, float | None, str]:
+    def _consensus_key(quote: MarketQuote) -> tuple[str, float | None, str]:
         line = quote.line
-        if line is not None and quote.market.lower() == "spreads":
+        if line is not None and quote.market.lower() in {"spreads", "alternate_spreads"}:
             line = abs(line)
         return (quote.market.lower(), line, quote.selection.lower())
 
@@ -43,14 +48,120 @@ class Scanner:
         configured = self.config.watchlist.markets
         if not alert_only:
             return configured
-
         minutes = self._minutes_to_start(event_start, now)
-        # Preserve quota on the frequent 10-minute scheduler. We use the
-        # cheap match-winner market for early checks and open all configured
-        # featured markets only near kickoff, when the signal is actionable.
         if minutes <= 20:
             return configured
         return ["h2h"] if "h2h" in configured else configured[:1]
+
+    def _evaluate_quotes(
+        self,
+        event: Event,
+        quotes: list[MarketQuote],
+        target: str,
+    ) -> list[Candidate]:
+        target_quotes = [q for q in quotes if self._bookmaker_matches(q.bookmaker, target)]
+        if not target_quotes:
+            return []
+
+        consensus = consensus_probabilities(quotes, excluded_bookmaker=target)
+        results: list[Candidate] = []
+
+        for quote in target_quotes:
+            consensus_data = consensus.get(self._consensus_key(quote))
+            if not consensus_data:
+                continue
+
+            model_probability, bookmaker_count, dispersion = consensus_data
+            if bookmaker_count < self.config.alerts.minimum_consensus_bookmakers:
+                continue
+
+            implied = implied_probability(quote.odds)
+            edge = calculate_edge(model_probability, implied)
+            ev = calculate_expected_value(model_probability, quote.odds)
+
+            book_quality = min(bookmaker_count / 5.0, 1.0)
+            agreement = max(0.0, 1.0 - dispersion * 5.0)
+            edge_quality = min(max(edge * 4.0, 0.0), 1.0)
+            confidence = calculate_confidence({
+                "statistics": 0.70,
+                "edge": edge_quality,
+                "form": 0.60,
+                "context": 0.60,
+                "market": min(0.65 + book_quality * 0.35, 1.0),
+                "data_quality": book_quality,
+                "uncertainty": agreement,
+            })
+            decision = classify_value(edge, ev)
+
+            if (
+                confidence >= self.config.alerts.minimum_confidence
+                and edge >= self.config.alerts.minimum_edge
+                and ev >= self.config.alerts.minimum_expected_value
+            ):
+                results.append(Candidate(
+                    event=event,
+                    quote=quote,
+                    model_probability=model_probability,
+                    implied_probability=implied,
+                    edge=edge,
+                    expected_value=ev,
+                    confidence=confidence,
+                    decision=decision,
+                    consensus_bookmakers=bookmaker_count,
+                    consensus_dispersion=dispersion,
+                ))
+        return results
+
+    def _target_has_market(
+        self,
+        available: dict[str, set[str]],
+        target: str,
+        markets: list[str],
+    ) -> bool:
+        for title, bookmaker_markets in available.items():
+            if self._bookmaker_matches(title, target) and any(m in bookmaker_markets for m in markets):
+                return True
+        return False
+
+    def _deep_scan_event(self, event: Event, now: datetime) -> list[Candidate]:
+        if not self.config.deep_scan.enabled:
+            return []
+
+        minutes = self._minutes_to_start(event.start_time, now)
+        if minutes < 0 or minutes > self.config.deep_scan.minutes_before_start:
+            return []
+
+        self.deep_events_considered += 1
+        available = self.provider.available_markets(event)
+        if not available:
+            return []
+
+        all_available = set().union(*available.values()) if available else set()
+        markets = select_deep_markets(event.sport, all_available)
+        markets = markets[:self.config.deep_scan.max_markets_per_event]
+        if not markets:
+            return []
+
+        if self.config.deep_scan.only_if_target_bookmaker_has_market:
+            if not any(
+                self._target_has_market(available, target, markets)
+                for target in self.config.watchlist.bookmakers
+            ):
+                return []
+
+        self.deep_events_with_markets += 1
+        self.deep_markets_requested += len(markets)
+        try:
+            quotes = self.provider.event_quotes(event, markets)
+        except Exception as exc:
+            print(f"Deep scan error {event.home} vs {event.away}: {exc}")
+            return []
+
+        self.deep_quotes_received += len(quotes)
+        candidates: list[Candidate] = []
+        for target in self.config.watchlist.bookmakers:
+            candidates.extend(self._evaluate_quotes(event, quotes, target))
+        return candidates
 
     def scan(
         self,
@@ -61,9 +172,11 @@ class Scanner:
         start = start or datetime.now(timezone.utc)
         end = start + timedelta(hours=hours or self.config.watch_hours)
         candidates: list[Candidate] = []
+        all_events: list[Event] = []
 
         for sport in self.config.watchlist.sports:
             events = self.provider.upcoming_events(sport, start, end)
+            all_events.extend(events)
             for event in events:
                 if alert_only and not self._in_alert_window(event.start_time, start):
                     continue
@@ -71,77 +184,45 @@ class Scanner:
                     continue
 
                 markets = self._markets_for_event(event.start_time, start, alert_only)
-                quotes = [
-                    q for q in self.provider.quotes(event, markets)
-                    if market_allowed(q, markets)
-                ]
+                quotes = [q for q in self.provider.quotes(event, markets) if market_allowed(q, markets)]
                 if not quotes:
                     continue
 
-                target_quotes = [
-                    q for q in quotes
-                    if any(self._bookmaker_matches(q.bookmaker, target)
-                           for target in self.config.watchlist.bookmakers)
-                ]
-                if not target_quotes:
-                    continue
-
                 for target in self.config.watchlist.bookmakers:
-                    target_specific = [
-                        q for q in target_quotes if self._bookmaker_matches(q.bookmaker, target)
-                    ]
-                    if not target_specific:
-                        continue
+                    candidates.extend(self._evaluate_quotes(event, quotes, target))
 
-                    consensus = consensus_probabilities(quotes, excluded_bookmaker=target)
+        # Stage 2: discover specialized markets only close to kickoff. The
+        # discovery endpoint tells us which markets exist before we spend odds
+        # quota. We also cap the number of events examined per run.
+        if self.config.deep_scan.enabled:
+            eligible = [
+                event for event in all_events
+                if matches_watchlist(event, self.config.watchlist)
+                and 0 <= self._minutes_to_start(event.start_time, start) <= self.config.deep_scan.minutes_before_start
+            ]
+            eligible.sort(key=lambda event: self._minutes_to_start(event.start_time, start))
+            for event in eligible[:self.config.deep_scan.max_events_per_run]:
+                if alert_only and not self._in_alert_window(event.start_time, start):
+                    continue
+                candidates.extend(self._deep_scan_event(event, start))
 
-                    for quote in target_specific:
-                        consensus_data = consensus.get(self._consensus_key(quote))
-                        if not consensus_data:
-                            continue
+        # Remove exact duplicates produced by featured/deep stages.
+        unique: dict[tuple[str, str, str, float | None, str], Candidate] = {}
+        for candidate in candidates:
+            key = (
+                candidate.event.id,
+                candidate.quote.market,
+                candidate.quote.selection,
+                candidate.quote.line,
+                candidate.quote.bookmaker,
+            )
+            previous = unique.get(key)
+            if previous is None or candidate.confidence > previous.confidence:
+                unique[key] = candidate
 
-                        model_probability, bookmaker_count, dispersion = consensus_data
-                        if bookmaker_count < self.config.alerts.minimum_consensus_bookmakers:
-                            continue
-
-                        implied = implied_probability(quote.odds)
-                        edge = calculate_edge(model_probability, implied)
-                        ev = calculate_expected_value(model_probability, quote.odds)
-
-                        book_quality = min(bookmaker_count / 5.0, 1.0)
-                        agreement = max(0.0, 1.0 - dispersion * 5.0)
-                        edge_quality = min(max(edge * 4.0, 0.0), 1.0)
-                        confidence = calculate_confidence({
-                            "statistics": 0.70,
-                            "edge": edge_quality,
-                            "form": 0.60,
-                            "context": 0.60,
-                            "market": min(0.65 + book_quality * 0.35, 1.0),
-                            "data_quality": book_quality,
-                            "uncertainty": agreement,
-                        })
-                        decision = classify_value(edge, ev)
-
-                        if (
-                            confidence >= self.config.alerts.minimum_confidence
-                            and edge >= self.config.alerts.minimum_edge
-                            and ev >= self.config.alerts.minimum_expected_value
-                        ):
-                            candidates.append(Candidate(
-                                event=event,
-                                quote=quote,
-                                model_probability=model_probability,
-                                implied_probability=implied,
-                                edge=edge,
-                                expected_value=ev,
-                                confidence=confidence,
-                                decision=decision,
-                                consensus_bookmakers=bookmaker_count,
-                                consensus_dispersion=dispersion,
-                            ))
-
-        candidates.sort(
+        result = list(unique.values())
+        result.sort(
             key=lambda c: (c.confidence, c.edge, c.expected_value, c.consensus_bookmakers),
             reverse=True,
         )
-        return candidates
+        return result[:self.config.alerts.max_alerts_per_scan]
