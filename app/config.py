@@ -6,10 +6,12 @@ from pydantic import BaseModel, Field
 
 class AlertConfig(BaseModel):
     enabled: bool = True
-    minutes_before_start: list[int] = Field(default_factory=lambda: [60, 10])
+    minutes_before_start: list[int] = Field(default_factory=lambda: [360, 60, 10])
     minimum_confidence: float = 75.0
     minimum_edge: float = 0.05
     minimum_expected_value: float = 0.05
+    minimum_consensus_bookmakers: int = Field(default=3, ge=1, le=10)
+    max_alerts_per_scan: int = Field(default=5, ge=1, le=20)
 
 
 class WatchlistConfig(BaseModel):
