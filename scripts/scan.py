@@ -49,6 +49,11 @@ def main() -> None:
     print(f"Deep events con mercados: {scanner.deep_events_with_markets}")
     print(f"Mercados especializados solicitados: {scanner.deep_markets_requested}")
     print(f"Cuotas especializadas recibidas: {scanner.deep_quotes_received}")
+    if scanner.deep_market_hits:
+        market_mix = ", ".join(
+            f"{market}={count}" for market, count in scanner.deep_market_hits.most_common()
+        )
+        print(f"Mercados especializados detectados: {market_mix}")
 
     if provider.last_quota_remaining is not None:
         print(f"Odds API credits restantes: {provider.last_quota_remaining}")
