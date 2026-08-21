@@ -14,7 +14,7 @@ def _local_start(event: Event, timezone_name: str) -> str:
 def competition_flag(event: Event) -> str:
     text = f"{event.competition} {event.home} {event.away}".lower()
     mappings = [
-        (("england", "premier league", "epl", "soccer_epl"), "🏴"),
+        (("england", "premier league", "epl", "soccer_epl"), "🇬🇧"),
         (("spain", "la liga", "laliga", "soccer_spain"), "🇪🇸"),
         (("germany", "bundesliga", "soccer_germany"), "🇩🇪"),
         (("italy", "serie a", "soccer_italy"), "🇮🇹"),
