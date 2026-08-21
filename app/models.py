@@ -33,3 +33,21 @@ class Candidate(BaseModel):
     decision: str
     consensus_bookmakers: int = 0
     consensus_dispersion: float = 0.0
+
+
+class LiveIncident(BaseModel):
+    id: str
+    event_id: str
+    sport: str
+    competition: str
+    home: str
+    away: str
+    occurred_at: datetime
+    kind: str
+    description: str
+    team: str | None = None
+    player: str | None = None
+    score_home: int | None = None
+    score_away: int | None = None
+    clock: str | None = None
+    impact: str = "medium"
