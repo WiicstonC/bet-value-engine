@@ -22,11 +22,21 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt
 
-      - name: Run scanner
+      - name: Validate runtime configuration
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scripts/scan.py
+        run: |
+          python -c "import os; print('ODDS_API_KEY:', bool(os.getenv('ODDS_API_KEY'))); print('TELEGRAM_BOT_TOKEN:', bool(os.getenv('TELEGRAM_BOT_TOKEN'))); print('TELEGRAM_CHAT_ID:', bool(os.getenv('TELEGRAM_CHAT_ID')))"
+          python -m compileall -q app scripts
+
+      - name: Run scanner
+        env:
+          PYTHONPATH: .
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m scripts.scan
