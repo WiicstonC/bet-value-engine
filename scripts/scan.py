@@ -24,8 +24,12 @@ def main() -> None:
     print(f"Modo: {'ALERTA' if alert_only else 'ANÁLISIS COMPLETO'}")
     print(f"Sports: {', '.join(DEFAULT_CONFIG.watchlist.sports)}")
     print(f"Ventana: {DEFAULT_CONFIG.watch_hours}h")
-    print(f"Mercados: {', '.join(DEFAULT_CONFIG.watchlist.markets)}")
+    print(f"Mercados base: {', '.join(DEFAULT_CONFIG.watchlist.markets)}")
     print(f"Bookmaker objetivo: {', '.join(DEFAULT_CONFIG.watchlist.bookmakers)}")
+    print(
+        "Mercados especializados: descubrimiento por evento + selección por deporte "
+        f"(máx {DEFAULT_CONFIG.deep_scan.max_markets_per_event}/evento)"
+    )
 
     candidates = scanner.scan(
         hours=DEFAULT_CONFIG.watch_hours,
@@ -41,10 +45,17 @@ def main() -> None:
             f"ev={candidate.expected_value:.2%} books={candidate.consensus_bookmakers}"
         )
 
+    print(f"Deep events considerados: {scanner.deep_events_considered}")
+    print(f"Deep events con mercados: {scanner.deep_events_with_markets}")
+    print(f"Mercados especializados solicitados: {scanner.deep_markets_requested}")
+    print(f"Cuotas especializadas recibidas: {scanner.deep_quotes_received}")
+
     if provider.last_quota_remaining is not None:
         print(f"Odds API credits restantes: {provider.last_quota_remaining}")
     if provider.last_quota_used is not None:
         print(f"Odds API credits usados: {provider.last_quota_used}")
+    if provider.last_quota_last is not None:
+        print(f"Costo de la última consulta de cuotas: {provider.last_quota_last}")
 
     due = [
         candidate
