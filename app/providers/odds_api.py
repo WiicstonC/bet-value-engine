@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -46,16 +46,24 @@ BOOKMAKERS_BY_SPORT = {
     ],
 }
 
-# Regions used only by the market-discovery endpoint. This endpoint lets the
-# engine learn which markets are actually visible before spending quota on odds.
-DISCOVERY_REGIONS = "uk,us"
+# One region is intentional: discovery is now a low-cost gate, not a full odds scan.
+DISCOVERY_REGIONS = "uk"
 
 
 class TheOddsAPIProvider(SportsProvider):
     def __init__(self, api_key: str | None = None):
-        self.api_key = api_key or os.getenv("ODDS_API_KEY")
-        if not self.api_key:
-            raise RuntimeError("Falta ODDS_API_KEY en las variables de entorno.")
+        configured = [
+            os.getenv(name, "").strip()
+            for name in ("ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3")
+        ]
+        configured = [key for key in configured if key]
+        if api_key:
+            configured = [api_key] + [key for key in configured if key != api_key]
+        if not configured:
+            raise RuntimeError("Falta al menos una ODDS_API_KEY en las variables de entorno.")
+
+        self.api_keys = configured
+        self.key_index = 0
         self.base_url = "https://api.the-odds-api.com/v4"
         self._odds_cache: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
         self._event_odds_cache: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
@@ -63,15 +71,41 @@ class TheOddsAPIProvider(SportsProvider):
         self.last_quota_remaining: str | None = None
         self.last_quota_used: str | None = None
         self.last_quota_last: str | None = None
+        self.last_key_index: int = 0
+        self.failover_count = 0
+
+    @property
+    def active_key_number(self) -> int:
+        return self.key_index + 1
 
     def _get(self, path: str, params: dict) -> list | dict:
-        params = {**params, "apiKey": self.api_key}
-        response = httpx.get(f"{self.base_url}{path}", params=params, timeout=25)
-        self.last_quota_remaining = response.headers.get("x-requests-remaining")
-        self.last_quota_used = response.headers.get("x-requests-used")
-        self.last_quota_last = response.headers.get("x-requests-last")
-        response.raise_for_status()
-        return response.json()
+        last_error: Exception | None = None
+        for index in range(self.key_index, len(self.api_keys)):
+            self.key_index = index
+            self.last_key_index = index
+            key = self.api_keys[index]
+            request_params = {**params, "apiKey": key}
+            try:
+                response = httpx.get(f"{self.base_url}{path}", params=request_params, timeout=25)
+                self.last_quota_remaining = response.headers.get("x-requests-remaining")
+                self.last_quota_used = response.headers.get("x-requests-used")
+                self.last_quota_last = response.headers.get("x-requests-last")
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status = exc.response.status_code
+                if status not in {401, 403, 429} or index >= len(self.api_keys) - 1:
+                    raise
+                self.failover_count += 1
+                continue
+            except httpx.HTTPError as exc:
+                last_error = exc
+                raise
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("No hay claves de Odds API disponibles.")
 
     @staticmethod
     def _bookmaker_matches(title: str, wanted: str) -> bool:
@@ -108,7 +142,21 @@ class TheOddsAPIProvider(SportsProvider):
                     away=item["away_team"],
                     start_time=start_time,
                 ))
-        return events
+        return sorted(events, key=lambda event: event.start_time)
+
+    def live_events(self, sport: str, now: datetime | None = None, lookback_minutes: int = 240) -> list[Event]:
+        now = now or datetime.now(timezone.utc)
+        start = now.replace(microsecond=0)
+        from datetime import timedelta
+        start = start - timedelta(minutes=lookback_minutes)
+        events = self.upcoming_events(sport, start, now)
+        return [event for event in events if event.start_time <= now]
+
+    def event_by_id(self, event_id: str, sport: str) -> Event | None:
+        now = datetime.now(timezone.utc)
+        from datetime import timedelta
+        events = self.upcoming_events(sport, now - timedelta(days=1), now + timedelta(days=3))
+        return next((event for event in events if event.id == event_id), None)
 
     def available_markets(self, event: Event) -> dict[str, set[str]]:
         if event.id in self._markets_cache:
@@ -174,7 +222,6 @@ class TheOddsAPIProvider(SportsProvider):
                 for market in bookmaker.get("markets", []):
                     for outcome in market.get("outcomes", []):
                         selection = outcome.get("name", "")
-                        # Player props commonly identify the player in `description`.
                         description = outcome.get("description")
                         if description:
                             selection = f"{description} | {selection}"
