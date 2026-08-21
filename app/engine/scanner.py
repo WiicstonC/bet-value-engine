@@ -53,7 +53,15 @@ class Scanner:
             return markets
         return ["h2h"]
 
-    def _evaluate_quotes(self, event: Event, quotes: list[MarketQuote], target: str, minimum_confidence: float | None = None, minimum_edge: float | None = None, minimum_expected_value: float | None = None) -> list[Candidate]:
+    def _evaluate_quotes(
+        self,
+        event: Event,
+        quotes: list[MarketQuote],
+        target: str,
+        minimum_confidence: float | None = None,
+        minimum_edge: float | None = None,
+        minimum_expected_value: float | None = None,
+    ) -> list[Candidate]:
         target_quotes = [q for q in quotes if self._bookmaker_matches(q.bookmaker, target)]
         if not target_quotes:
             return []
@@ -95,6 +103,13 @@ class Scanner:
                 return True
         return False
 
+    def _selected_deep_markets(self, event: Event) -> list[str]:
+        available = self.provider.available_markets(event)
+        if not available:
+            return []
+        all_available = set().union(*available.values()) if available else set()
+        return select_deep_markets(event.sport, all_available)[:self.config.deep_scan.max_markets_per_event]
+
     def _deep_scan_event(self, event: Event, now: datetime, ignore_time_window: bool = False) -> list[Candidate]:
         if not self.config.deep_scan.enabled:
             return []
@@ -129,6 +144,44 @@ class Scanner:
 
     def analyze_event(self, event: Event) -> list[Candidate]:
         return self._deep_scan_event(event, datetime.now(timezone.utc), ignore_time_window=True)
+
+    def explore_event(self, event: Event, max_results: int = 12) -> list[Candidate]:
+        """Inspect the selected deep markets without applying the alert thresholds.
+
+        This is used by the Telegram button: the user explicitly authorized a
+        credit-consuming deep lookup, so we want to see the strongest available
+        markets instead of hiding everything that misses the alert floor.
+        """
+        if not self.config.deep_scan.enabled:
+            return []
+        self.deep_events_considered += 1
+        markets = self._selected_deep_markets(event)
+        if not markets:
+            return []
+        self.deep_events_with_markets += 1
+        self.deep_markets_requested += len(markets)
+        for market in markets:
+            self.deep_market_hits[market] += 1
+        try:
+            quotes = self.provider.event_quotes(event, markets)
+        except Exception as exc:
+            print(f"Deep exploration error {event.home} vs {event.away}: {exc}")
+            return []
+        self.deep_quotes_received += len(quotes)
+        candidates: list[Candidate] = []
+        for target in self.config.watchlist.bookmakers:
+            candidates.extend(
+                self._evaluate_quotes(
+                    event,
+                    quotes,
+                    target,
+                    minimum_confidence=0.0,
+                    minimum_edge=-1.0,
+                    minimum_expected_value=-1.0,
+                )
+            )
+        candidates.sort(key=lambda c: (c.edge, c.expected_value, c.confidence, c.consensus_bookmakers), reverse=True)
+        return candidates[:max_results]
 
     def scan_live(self, now: datetime | None = None) -> list[Candidate]:
         now = now or datetime.now(timezone.utc)
