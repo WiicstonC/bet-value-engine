@@ -4,24 +4,43 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Tipo de análisis manual"
+        description: "Modo de ejecución"
         required: true
-        default: "alert"
+        default: "digest"
         type: choice
         options:
-          - alert
+          - digest
+          - live
+          - analyze
           - full
+      sport:
+        description: "Solo para analyze: tennis, football o nba"
+        required: false
+        default: "football"
+        type: choice
+        options:
+          - tennis
+          - football
+          - nba
+      event_id:
+        description: "Solo para analyze: Event ID enviado por Telegram"
+        required: false
+        type: string
   schedule:
-    - cron: "3/10 * * * *"
-      timezone: "America/Bogota"
     - cron: "0 6 * * *"
       timezone: "America/Bogota"
+    - cron: "*/10 * * * *"
+      timezone: "America/Bogota"
+
+concurrency:
+  group: bet-value-${{ github.event.schedule || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Checkout
@@ -39,10 +58,12 @@ jobs:
       - name: Validate runtime configuration
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ODDS_API_KEY_2: ${{ secrets.ODDS_API_KEY_2 }}
+          ODDS_API_KEY_3: ${{ secrets.ODDS_API_KEY_3 }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -c "import os; print('ODDS_API_KEY:', bool(os.getenv('ODDS_API_KEY'))); print('TELEGRAM_BOT_TOKEN:', bool(os.getenv('TELEGRAM_BOT_TOKEN'))); print('TELEGRAM_CHAT_ID:', bool(os.getenv('TELEGRAM_CHAT_ID')))"
+          python -c "import os; print('ODDS_API_KEY:', bool(os.getenv('ODDS_API_KEY'))); print('ODDS_API_KEY_2:', bool(os.getenv('ODDS_API_KEY_2'))); print('ODDS_API_KEY_3:', bool(os.getenv('ODDS_API_KEY_3'))); print('TELEGRAM_BOT_TOKEN:', bool(os.getenv('TELEGRAM_BOT_TOKEN'))); print('TELEGRAM_CHAT_ID:', bool(os.getenv('TELEGRAM_CHAT_ID')))"
           python -m compileall -q app scripts tests
           python -m scripts.preflight
 
@@ -51,17 +72,39 @@ jobs:
           PYTHONPATH: .
         run: python -m pytest -q
 
-      - name: Run scanner
+      - name: Run selected mode
         env:
           PYTHONPATH: .
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ODDS_API_KEY_2: ${{ secrets.ODDS_API_KEY_2 }}
+          ODDS_API_KEY_3: ${{ secrets.ODDS_API_KEY_3 }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "0 6 * * *" ]; then
-            python -m scripts.scan --full
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "full" ]; then
-            python -m scripts.scan --full
+            python -m scripts.daily_digest
+          elif [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "*/10 * * * *" ]; then
+            python -m scripts.live_scan
+          elif [ "${{ inputs.mode }}" = "digest" ]; then
+            python -m scripts.daily_digest
+          elif [ "${{ inputs.mode }}" = "live" ]; then
+            python -m scripts.live_scan
+          elif [ "${{ inputs.mode }}" = "analyze" ]; then
+            test -n "${{ inputs.event_id }}"
+            python -m scripts.analyze_event --sport "${{ inputs.sport }}" --event-id "${{ inputs.event_id }}"
           else
-            python -m scripts.scan
+            python -m scripts.scan --full
           fi
+
+      - name: Persist live state
+        if: ${{ (github.event_name == 'schedule' && github.event.schedule == '*/10 * * * *') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'live') }}
+        run: |
+          if git diff --quiet -- data/live_state.json; then
+            echo "Sin cambios en live_state.json"
+            exit 0
+          fi
+          git config user.name "bet-value-engine[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/live_state.json
+          git commit -m "chore: update live odds state [skip ci]"
+          git push
