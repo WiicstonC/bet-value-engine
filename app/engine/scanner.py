@@ -30,7 +30,20 @@ class Scanner:
             return "betano" in title
         return title == wanted or wanted in title
 
-    def scan(self, start: datetime | None = None, hours: int | None = None) -> list[Candidate]:
+    def _in_alert_window(self, start_time: datetime, now: datetime) -> bool:
+        minutes_to_start = (start_time - now).total_seconds() / 60
+        tolerance = max(self.config.scan_interval_minutes / 2, 2)
+        return any(
+            abs(minutes_to_start - target) <= tolerance
+            for target in self.config.alerts.minutes_before_start
+        )
+
+    def scan(
+        self,
+        start: datetime | None = None,
+        hours: int | None = None,
+        alert_only: bool = False,
+    ) -> list[Candidate]:
         start = start or datetime.now(timezone.utc)
         end = start + timedelta(hours=hours or self.config.watch_hours)
         candidates: list[Candidate] = []
@@ -38,6 +51,8 @@ class Scanner:
         for sport in self.config.watchlist.sports:
             events = self.provider.upcoming_events(sport, start, end)
             for event in events:
+                if alert_only and not self._in_alert_window(event.start_time, start):
+                    continue
                 if not matches_watchlist(event, self.config.watchlist):
                     continue
 
@@ -110,8 +125,6 @@ class Scanner:
                                 consensus_dispersion=dispersion,
                             ))
 
-        # Keep every eligible candidate here. The alert manager applies the
-        # time window first and only then limits the number of notifications.
         candidates.sort(
             key=lambda c: (c.confidence, c.edge, c.expected_value, c.consensus_bookmakers),
             reverse=True,
