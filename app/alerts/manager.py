@@ -120,9 +120,11 @@ def format_daily_digest(events: list[Event], timezone_name: str, max_events: int
         "💳 Cuotas todavía NO consultadas para estos eventos.",
     ]
     markups: list[dict[str, Any] | None] = [None]
+    selected_ids: set[str] = set()
 
     if preanalysis:
         selected = sorted(((event, preanalysis[event.id]) for event in ordered if event.id in preanalysis), key=lambda pair: pair[0].start_time)
+        selected_ids = {event.id for event, _ in selected}
         for event, analysis in selected:
             local = event.start_time.astimezone(local_tz)
             messages.append(
@@ -135,12 +137,15 @@ def format_daily_digest(events: list[Event], timezone_name: str, max_events: int
             markups.append(deep_button(event))
 
     remainder_lines = ["📋 RESTO DE LA AGENDA", ""]
-    for event in ordered:
+    remainder_events = [event for event in ordered if event.id not in selected_ids]
+    for event in remainder_events:
         local = event.start_time.astimezone(local_tz)
         remainder_lines.append(
             f"{competition_flag(event)} {local.strftime('%d/%m %H:%M')} | "
             f"{event.sport.upper()} | {event.home} vs {event.away} | {competition_label(event)}"
         )
+    if not remainder_events:
+        remainder_lines.append("Todos los eventos seleccionados aparecen arriba para revisión.")
     if total > max_events:
         remainder_lines += ["", f"…y {total - max_events} eventos más."]
     remainder = _chunk_text(remainder_lines)
