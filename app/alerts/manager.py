@@ -1,5 +1,5 @@
-from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.alerts.telegram import TelegramAlertSender
@@ -11,15 +11,50 @@ def _local_start(event: Event, timezone_name: str) -> str:
     return event.start_time.astimezone(ZoneInfo(timezone_name)).strftime("%d/%m %H:%M")
 
 
+def competition_flag(event: Event) -> str:
+    text = f"{event.competition} {event.home} {event.away}".lower()
+    mappings = [
+        (("england", "premier league", "epl", "soccer_epl"), "🏴"),
+        (("spain", "la liga", "laliga", "soccer_spain"), "🇪🇸"),
+        (("germany", "bundesliga", "soccer_germany"), "🇩🇪"),
+        (("italy", "serie a", "soccer_italy"), "🇮🇹"),
+        (("france", "ligue 1", "ligue one", "soccer_france"), "🇫🇷"),
+        (("colombia", "primera a", "liga betplay", "dimayor", "soccer_colombia"), "🇨🇴"),
+        (("nba", "basketball_nba"), "🇺🇸"),
+        (("cincinnati", "indian wells", "miami open", "us open", "washington open"), "🇺🇸"),
+        (("wimbledon", "queens", "queen's", "halle", "bad homburg", "stuttgart", "german open"), "🇬🇧"),
+        (("french open", "roland garros"), "🇫🇷"),
+        (("madrid", "barcelona", "mutua"), "🇪🇸"),
+        (("rome", "italian open", "rome masters"), "🇮🇹"),
+        (("monte carlo", "monaco"), "🇲🇨"),
+        (("shanghai", "china open", "beijing"), "🇨🇳"),
+        (("tokyo", "japan open"), "🇯🇵"),
+        (("dubai", "qatar"), "🇦🇪"),
+    ]
+    for keywords, flag in mappings:
+        if any(keyword in text for keyword in keywords):
+            return flag
+    return "🌐"
+
+
+def competition_label(event: Event) -> str:
+    return event.competition.strip() or event.sport.upper()
+
+
+def deep_button(event: Event) -> dict[str, Any]:
+    callback_data = f"deep|{event.sport}|{event.id}"
+    if len(callback_data.encode("utf-8")) > 64:
+        raise ValueError(f"Event ID demasiado largo para callback_data: {event.id}")
+    return {"inline_keyboard": [[{"text": "🔬 Analizar a fondo", "callback_data": callback_data}]]}
+
+
 def format_candidate(candidate: Candidate, timezone_name: str = "America/Bogota") -> str:
-    event = candidate.event
-    quote = candidate.quote
+    event, quote = candidate.event, candidate.quote
     line = f" {quote.line}" if quote.line is not None else ""
-    local_start = _local_start(event, timezone_name)
     return (
         "🎯 BET VALUE ALERT\n\n"
         f"{event.sport.upper()} — {event.home} vs {event.away}\n"
-        f"Inicio Colombia: {local_start}\n"
+        f"Inicio Colombia: {_local_start(event, timezone_name)}\n"
         f"Mercado: {quote.market}{line}\n"
         f"Selección: {quote.selection}\n"
         f"Casa objetivo: {quote.bookmaker}\n"
@@ -37,8 +72,7 @@ def format_candidate(candidate: Candidate, timezone_name: str = "America/Bogota"
 
 
 def format_live_candidate(candidate: Candidate, timezone_name: str = "America/Bogota", incident_text: str | None = None) -> str:
-    event = candidate.event
-    quote = candidate.quote
+    event, quote = candidate.event, candidate.quote
     line = f" {quote.line}" if quote.line is not None else ""
     incident = f"\n⚡ Evento detectado: {incident_text}\n" if incident_text else ""
     return (
@@ -58,46 +92,11 @@ def format_live_candidate(candidate: Candidate, timezone_name: str = "America/Bo
     )
 
 
-def format_daily_digest(events: list[Event], timezone_name: str, max_events: int = 45, preanalysis: dict[str, str] | None = None) -> list[str]:
-    local_tz = ZoneInfo(timezone_name)
-    ordered = sorted(events, key=lambda event: event.start_time)[:max_events]
-    total = len(events)
-    lines = [
-        "📅 AGENDA + PREANÁLISIS DEPORTIVO",
-        "",
-        f"Eventos encontrados: {total}",
-        "Cuotas NO consultadas en esta fase: 0 créditos de Odds API.",
-        "",
-    ]
-
-    if preanalysis:
-        lines += ["🧠 PARTIDOS QUE MERECEN ESTUDIO", ""]
-        selected = sorted(
-            ((event, preanalysis[event.id]) for event in ordered if event.id in preanalysis),
-            key=lambda pair: pair[0].start_time,
-        )
-        for event, analysis in selected:
-            local = event.start_time.astimezone(local_tz)
-            lines.append(f"🔎 {local.strftime('%d/%m %H:%M')} | {event.sport.upper()} | {event.home} vs {event.away}")
-            lines.append(f"ID: {event.id}")
-            lines.append(analysis)
-            lines.append("👉 Si te interesa, usa este ID para análisis profundo y recién ahí consultamos mercados/cuotas.\n")
-
-    lines += ["📋 RESTO DE LA AGENDA", ""]
-    for event in ordered:
-        local = event.start_time.astimezone(local_tz)
-        lines.append(
-            f"• {local.strftime('%d/%m %H:%M')} | {event.sport.upper()} | {event.home} vs {event.away} | {event.competition} | ID {event.id}"
-        )
-
-    if total > max_events:
-        lines += ["", f"…y {total - max_events} eventos más."]
-
-    chunks: list[str] = []
-    current = ""
+def _chunk_text(lines: list[str], limit: int = 3900) -> list[str]:
+    chunks, current = [], ""
     for line in lines:
         candidate = f"{current}\n{line}" if current else line
-        if len(candidate) > 3900:
+        if len(candidate) > limit:
             if current:
                 chunks.append(current)
             current = line
@@ -106,6 +105,48 @@ def format_daily_digest(events: list[Event], timezone_name: str, max_events: int
     if current:
         chunks.append(current)
     return chunks
+
+
+def format_daily_digest(events: list[Event], timezone_name: str, max_events: int = 45, preanalysis: dict[str, str] | None = None) -> tuple[list[str], list[dict[str, Any] | None]]:
+    """Build compact Telegram cards. Selected events get their own deep-analysis button."""
+    local_tz = ZoneInfo(timezone_name)
+    ordered = sorted(events, key=lambda event: event.start_time)[:max_events]
+    total = len(events)
+    messages = [
+        "📅 AGENDA DEPORTIVA",
+        "",
+        f"Eventos encontrados: {total}",
+        "🧠 Preanálisis cualitativo: activo",
+        "💳 Cuotas todavía NO consultadas para estos eventos.",
+    ]
+    markups: list[dict[str, Any] | None] = [None]
+
+    if preanalysis:
+        selected = sorted(((event, preanalysis[event.id]) for event in ordered if event.id in preanalysis), key=lambda pair: pair[0].start_time)
+        for event, analysis in selected:
+            local = event.start_time.astimezone(local_tz)
+            messages.append(
+                f"{competition_flag(event)} {competition_label(event)}\n"
+                f"{event.sport.upper()} | {event.home} vs {event.away}\n"
+                f"🕒 {local.strftime('%d/%m %H:%M')} Colombia\n\n"
+                f"{analysis}\n\n"
+                "💡 El preanálisis decide si vale la pena gastar un crédito en mercados/cuotas."
+            )
+            markups.append(deep_button(event))
+
+    remainder_lines = ["📋 RESTO DE LA AGENDA", ""]
+    for event in ordered:
+        local = event.start_time.astimezone(local_tz)
+        remainder_lines.append(
+            f"{competition_flag(event)} {local.strftime('%d/%m %H:%M')} | "
+            f"{event.sport.upper()} | {event.home} vs {event.away} | {competition_label(event)}"
+        )
+    if total > max_events:
+        remainder_lines += ["", f"…y {total - max_events} eventos más."]
+    remainder = _chunk_text(remainder_lines)
+    messages.extend(remainder)
+    markups.extend([None] * len(remainder))
+    return messages, markups
 
 
 def alert_due(candidate: Candidate, alert_config: AlertConfig, scan_interval_minutes: int) -> bool:
@@ -139,5 +180,5 @@ class AlertManager:
         return sent
 
     def send_daily_digest(self, events: list[Event], preanalysis: dict[str, str] | None = None) -> int:
-        messages = format_daily_digest(events, self.config.timezone, self.config.daily_digest.max_events_per_message, preanalysis)
-        return self.sender.send_many(messages)
+        messages, markups = format_daily_digest(events, self.config.timezone, self.config.daily_digest.max_events_per_message, preanalysis)
+        return self.sender.send_many(messages, markups)
