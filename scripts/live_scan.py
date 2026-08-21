@@ -1,4 +1,4 @@
-from app.alerts.manager import AlertManager, format_live_candidate
+from app.alerts.manager import format_live_candidate
 from app.alerts.telegram import TelegramAlertSender
 from app.config import DEFAULT_CONFIG
 from app.engine.scanner import Scanner
@@ -7,21 +7,30 @@ from app.live_incidents import LiveIncidentState
 from app.live_state import LiveState
 from app.live_match import match_incident
 from app.providers.espn_live import ESPNLiveProvider
+from app.providers.espn_tennis import ESPNTennisLiveProvider
 from app.providers.odds_api import TheOddsAPIProvider
 
 
 def main() -> None:
     config = DEFAULT_CONFIG
     incident_provider = ESPNLiveProvider()
+    tennis_provider = ESPNTennisLiveProvider()
     odds_provider = TheOddsAPIProvider()
     scanner = Scanner(odds_provider, config)
     incident_state = LiveIncidentState()
     odds_state = LiveState()
 
     fresh_incidents = []
-    for sport in config.watchlist.sports:
+    for sport in ("football", "nba"):
+        if sport not in config.watchlist.sports:
+            continue
         for incident in incident_provider.incidents(sport):
             if incident.impact in {"critical", "high", "medium"} and incident_state.new(incident):
+                fresh_incidents.append(incident)
+
+    if "tennis" in config.watchlist.sports:
+        for incident in tennis_provider.incidents():
+            if incident_state.new(incident):
                 fresh_incidents.append(incident)
 
     candidates = []
@@ -29,7 +38,7 @@ def main() -> None:
     for incident in fresh_incidents:
         event = match_incident(odds_provider, incident)
         if not event:
-            print(f"No Odds API match for incident: {incident.description}")
+            print(f"No Odds API match for incident: {incident.home} vs {incident.away} | {incident.description}")
             continue
         triggered.append((incident, event))
         try:
