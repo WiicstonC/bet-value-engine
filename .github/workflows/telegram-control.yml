@@ -3,8 +3,8 @@ name: Telegram Control
 on:
   workflow_dispatch:
   schedule:
+    # GitHub Actions schedule is UTC. Colombia is UTC-5.
     - cron: "*/5 * * * *"
-      timezone: "America/Bogota"
 
 concurrency:
   group: telegram-control
@@ -31,6 +31,13 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Ensure Telegram uses polling
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "from app.alerts.telegram import TelegramAlertSender; s=TelegramAlertSender(); s.delete_webhook(False); print('Telegram polling listo')"
+
       - name: Process Telegram controls
         env:
           PYTHONPATH: .
@@ -39,6 +46,7 @@ jobs:
           ODDS_API_KEY_3: ${{ secrets.ODDS_API_KEY_3 }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python -m scripts.telegram_control
 
       - name: Persist Telegram update offset
