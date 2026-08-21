@@ -1,7 +1,7 @@
 {
   "timezone": "America/Bogota",
   "scan_interval_minutes": 10,
-  "watch_hours": 48,
+  "watch_hours": 24,
   "watchlist": {
     "sports": ["tennis", "football", "nba"],
     "competitions": [
@@ -63,7 +63,7 @@
   },
   "alerts": {
     "enabled": true,
-    "minutes_before_start": [360, 60, 10],
+    "minutes_before_start": [10],
     "minimum_confidence": 75,
     "minimum_edge": 0.05,
     "minimum_expected_value": 0.05,
@@ -75,6 +75,29 @@
     "minutes_before_start": 60,
     "max_events_per_run": 8,
     "max_markets_per_event": 6,
-    "only_if_target_bookmaker_has_market": true
+    "only_if_target_bookmaker_has_market": true,
+    "manual_only": true
+  },
+  "daily_digest": {
+    "enabled": true,
+    "hour_local": 6,
+    "days_ahead": 1,
+    "max_events_per_message": 45
+  },
+  "live": {
+    "enabled": true,
+    "interval_minutes": 10,
+    "lookback_minutes": 240,
+    "markets": ["h2h"],
+    "minimum_confidence": 78,
+    "minimum_edge": 0.07,
+    "minimum_expected_value": 0.07,
+    "max_alerts_per_run": 3,
+    "price_shock_percent": 12,
+    "persist_state": true
+  },
+  "api_pool": {
+    "enabled": true,
+    "key_env_names": ["ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3"]
   }
 }
