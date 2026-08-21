@@ -27,6 +27,8 @@ on:
         description: "Solo para analyze: Event ID enviado por Telegram"
         required: false
         type: string
+  push:
+    branches: [main]
   schedule:
     - cron: "0 6 * * *"
       timezone: "America/Bogota"
@@ -39,6 +41,7 @@ concurrency:
 
 jobs:
   scan:
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[telegram-digest]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -88,15 +91,17 @@ jobs:
             python -m scripts.daily_digest
           elif [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "*/10 * * * *" ]; then
             python -m scripts.live_scan
-          elif [ "${{ inputs.mode }}" = "digest" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "digest" ]; then
             python -m scripts.daily_digest
-          elif [ "${{ inputs.mode }}" = "live" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "live" ]; then
             python -m scripts.live_scan
-          elif [ "${{ inputs.mode }}" = "analyze" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "analyze" ]; then
             test -n "${{ inputs.event_id }}"
             python -m scripts.analyze_event --sport "${{ inputs.sport }}" --event-id "${{ inputs.event_id }}"
-          elif [ "${{ inputs.mode }}" = "test_telegram" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "test_telegram" ]; then
             python -m scripts.test_telegram
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            python -m scripts.daily_digest
           else
             python -m scripts.scan --full
           fi
