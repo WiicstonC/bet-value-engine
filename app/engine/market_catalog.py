@@ -12,8 +12,8 @@ FEATURED_MARKETS = {
 DEEP_MARKETS = {
     "tennis": [
         # The Odds API currently documents limited tennis coverage beyond
-        # winner/spreads/totals. Keep these here so another provider can plug
-        # in aces/double-fault markets without changing the scanner.
+        # winner/spreads/totals. These keys are retained for providers that
+        # expose tennis player props; unavailable keys are never requested.
         "player_aces",
         "player_double_faults",
         "alternate_spreads",
@@ -26,10 +26,13 @@ DEEP_MARKETS = {
         "alternate_totals_cards",
         "alternate_spreads_cards",
         "player_to_receive_card",
+        "player_to_receive_red_card",
         "player_shots",
         "player_shots_on_target",
         "player_assists",
         "player_goal_scorer_anytime",
+        "player_tackles",
+        "player_fouls",
         "btts",
         "double_chance",
         "draw_no_bet",
