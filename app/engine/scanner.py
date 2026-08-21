@@ -22,6 +22,14 @@ class Scanner:
             line = abs(line)
         return (quote.market.lower(), line, quote.selection.lower())
 
+    @staticmethod
+    def _bookmaker_matches(title: str, wanted: str) -> bool:
+        title = title.lower().strip()
+        wanted = wanted.lower().strip()
+        if wanted == "betano":
+            return "betano" in title
+        return title == wanted or wanted in title
+
     def scan(self, start: datetime | None = None, hours: int | None = None) -> list[Candidate]:
         start = start or datetime.now(timezone.utc)
         end = start + timedelta(hours=hours or self.config.watch_hours)
@@ -41,21 +49,33 @@ class Scanner:
                 if not quotes:
                     continue
 
-                target_books = {b.lower() for b in self.config.watchlist.bookmakers}
-                target_quotes = [q for q in quotes if q.bookmaker.lower() in target_books]
+                target_quotes = [
+                    q for q in quotes
+                    if any(self._bookmaker_matches(q.bookmaker, target)
+                           for target in self.config.watchlist.bookmakers)
+                ]
                 if not target_quotes:
                     continue
 
-                for target_book in target_books:
-                    consensus = consensus_probabilities(quotes, excluded_bookmaker=target_book)
+                for target in self.config.watchlist.bookmakers:
+                    target_specific = [
+                        q for q in target_quotes if self._bookmaker_matches(q.bookmaker, target)
+                    ]
+                    if not target_specific:
+                        continue
 
-                    for quote in target_quotes:
+                    consensus = consensus_probabilities(quotes, excluded_bookmaker=target)
+
+                    for quote in target_specific:
                         key = self._consensus_key(quote)
                         consensus_data = consensus.get(key)
                         if not consensus_data:
                             continue
 
                         model_probability, bookmaker_count, dispersion = consensus_data
+                        if bookmaker_count < self.config.alerts.minimum_consensus_bookmakers:
+                            continue
+
                         implied = implied_probability(quote.odds)
                         edge = calculate_edge(model_probability, implied)
                         ev = calculate_expected_value(model_probability, quote.odds)
@@ -89,6 +109,18 @@ class Scanner:
                                 expected_value=ev,
                                 confidence=confidence,
                                 decision=decision,
+                                consensus_bookmakers=bookmaker_count,
+                                consensus_dispersion=dispersion,
                             ))
 
-        return candidates
+        # Rank the strongest opportunities first and cap alerts per scan.
+        candidates.sort(
+            key=lambda c: (
+                c.confidence,
+                c.edge,
+                c.expected_value,
+                c.consensus_bookmakers,
+            ),
+            reverse=True,
+        )
+        return candidates[: self.config.alerts.max_alerts_per_scan]
