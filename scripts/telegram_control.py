@@ -24,9 +24,19 @@ def _save_offset(offset: int) -> None:
     STATE_PATH.write_text(json.dumps({"offset": offset}, indent=2), encoding="utf-8")
 
 
+def _safe_callback_answer(sender: TelegramAlertSender, callback_id: str, text: str, show_alert: bool = False) -> None:
+    try:
+        sender.answer_callback(callback_id, text, show_alert=show_alert)
+    except Exception as exc:
+        # A scheduled GitHub Action can receive a callback several minutes after
+        # the button was pressed. Telegram may have expired the callback query;
+        # that must not prevent the actual deep analysis from running.
+        print(f"Callback answer no disponible: {exc}")
+
+
 def _format_deep_result(event, candidates, scanner, provider) -> str:
     header = (
-        f"🔬 ANÁLISIS PROFUNDO\n\n"
+        "🔬 ANÁLISIS PROFUNDO\n\n"
         f"{competition_flag(event)} {competition_label(event)}\n"
         f"{event.sport.upper()} | {event.home} vs {event.away}\n\n"
     )
@@ -82,21 +92,21 @@ def _process_callback(sender: TelegramAlertSender, update: dict) -> None:
 
     if not callback_id or chat_id != str(sender.chat_id):
         if callback_id:
-            sender.answer_callback(callback_id, "No autorizado.", show_alert=True)
+            _safe_callback_answer(sender, callback_id, "No autorizado.", show_alert=True)
         return
 
     data = str(callback.get("data", ""))
     parts = data.split("|", 2)
     if len(parts) != 3 or parts[0] != "deep":
-        sender.answer_callback(callback_id, "Acción no reconocida.", show_alert=True)
+        _safe_callback_answer(sender, callback_id, "Acción no reconocida.", show_alert=True)
         return
 
     sport, event_id = parts[1], parts[2]
     if sport not in DEFAULT_CONFIG.watchlist.sports:
-        sender.answer_callback(callback_id, "Deporte no habilitado.", show_alert=True)
+        _safe_callback_answer(sender, callback_id, "Deporte no habilitado.", show_alert=True)
         return
 
-    sender.answer_callback(callback_id, "Solicitud recibida. Consultando mercados…")
+    _safe_callback_answer(sender, callback_id, "Solicitud recibida. Consultando mercados…")
     message_id = message.get("message_id")
     if message_id:
         try:
