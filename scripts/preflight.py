@@ -4,10 +4,7 @@ import httpx
 
 
 ODDS_BASE = "https://api.the-odds-api.com/v4"
-REQUIRED_SECRETS = [
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
-]
+REQUIRED_SECRETS = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
 ODDS_KEY_NAMES = ["ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3"]
 REQUIRED_SPORT_KEYS = [
     "basketball_nba",
@@ -26,62 +23,49 @@ def main() -> None:
     if not available_keys:
         missing.append("ODDS_API_KEY (o una clave de respaldo ODDS_API_KEY_2/ODDS_API_KEY_3)")
     if missing:
-        raise RuntimeError(
-            "Faltan estos secrets en GitHub Actions: "
-            + ", ".join(missing)
-            + ". Crea cada uno exactamente con ese nombre en Settings > Secrets and variables > Actions > New repository secret."
-        )
+        raise RuntimeError("Faltan estos secrets en GitHub Actions: " + ", ".join(missing) + ".")
 
     sports = None
     active_key_name = None
     last_error = None
     for key_name in available_keys:
         try:
-            response = httpx.get(
-                f"{ODDS_BASE}/sports",
-                params={"apiKey": os.environ[key_name]},
-                timeout=20,
-            )
+            response = httpx.get(f"{ODDS_BASE}/sports", params={"apiKey": os.environ[key_name]}, timeout=20)
             response.raise_for_status()
             sports = response.json()
             active_key_name = key_name
             break
         except httpx.HTTPError as exc:
             last_error = exc
-            continue
 
     if sports is None:
         raise RuntimeError(f"Ninguna clave de Odds API pudo validarse: {last_error}")
 
     available_keys_set = {item.get("key") for item in sports}
     print(f"The Odds API OK usando {active_key_name}: {len(sports)} deportes/competiciones disponibles")
-
     missing_sports = [key for key in REQUIRED_SPORT_KEYS if key not in available_keys_set]
     if missing_sports:
-        print("Aviso: estas competiciones no estan activas actualmente:")
-        for key in missing_sports:
-            print(f"  - {key}")
-        print("Esto no detiene el workflow; The Odds API solo publica ciertos torneos cuando estan en temporada.")
+        print("Aviso: competiciones no activas actualmente: " + ", ".join(missing_sports))
     else:
-        print("Todas las ligas principales de NBA y futbol solicitadas estan disponibles.")
+        print("Todas las ligas principales de NBA y fútbol solicitadas están disponibles.")
 
-    tennis_keys = sorted(
-        key for key in available_keys_set
-        if isinstance(key, str) and key.startswith(("tennis_atp_", "tennis_wta_"))
-    )
+    tennis_keys = sorted(key for key in available_keys_set if isinstance(key, str) and key.startswith(("tennis_atp_", "tennis_wta_")))
     print(f"Competiciones de tenis activas detectadas: {len(tennis_keys)}")
-    for key in tennis_keys:
-        print(f"  - {key}")
 
-    telegram = httpx.get(
-        f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/getMe",
-        timeout=15,
-    )
+    telegram_base = f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}"
+    telegram = httpx.get(f"{telegram_base}/getMe", timeout=15)
     telegram.raise_for_status()
     data = telegram.json()
     if not data.get("ok"):
-        raise RuntimeError("Telegram Bot API rechazo el token.")
+        raise RuntimeError("Telegram Bot API rechazó el token.")
     print(f"Telegram Bot API OK: @{data['result'].get('username', 'sin_username')}")
+
+    chat = httpx.get(f"{telegram_base}/getChat", params={"chat_id": os.environ["TELEGRAM_CHAT_ID"]}, timeout=15)
+    chat.raise_for_status()
+    chat_data = chat.json()
+    if not chat_data.get("ok"):
+        raise RuntimeError("Telegram no pudo resolver TELEGRAM_CHAT_ID. Verifica que el bot esté en el chat y que el ID sea correcto.")
+    print(f"Telegram chat OK: {chat_data['result'].get('title') or chat_data['result'].get('username') or chat_data['result'].get('id')}")
     print("Preflight OK")
 
 
