@@ -28,7 +28,7 @@ def main() -> None:
 
     print(f"Candidatos en ventana de alerta: {len(candidates)}")
 
-    manager = AlertManager(TelegramAlertSender())
+    manager = AlertManager(TelegramAlertSender(), DEFAULT_CONFIG)
     sent = manager.notify(candidates) if DEFAULT_CONFIG.alerts.enabled else 0
     print(f"Alertas enviadas: {sent}")
 
