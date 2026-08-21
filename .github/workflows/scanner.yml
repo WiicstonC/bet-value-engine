@@ -12,6 +12,7 @@ on:
           - digest
           - live
           - analyze
+          - test_telegram
           - full
       sport:
         description: "Solo para analyze: tennis, football o nba"
@@ -94,6 +95,8 @@ jobs:
           elif [ "${{ inputs.mode }}" = "analyze" ]; then
             test -n "${{ inputs.event_id }}"
             python -m scripts.analyze_event --sport "${{ inputs.sport }}" --event-id "${{ inputs.event_id }}"
+          elif [ "${{ inputs.mode }}" = "test_telegram" ]; then
+            python -m scripts.test_telegram
           else
             python -m scripts.scan --full
           fi
