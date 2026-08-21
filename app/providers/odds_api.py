@@ -10,12 +10,8 @@ from app.providers.base import SportsProvider
 SPORT_KEYS = {
     "nba": ["basketball_nba"],
     "football": [
-        "soccer_epl",
-        "soccer_spain_la_liga",
-        "soccer_italy_serie_a",
-        "soccer_germany_bundesliga",
-        "soccer_france_ligue_one",
-        "soccer_colombia_primera_a",
+        "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a",
+        "soccer_germany_bundesliga", "soccer_france_ligue_one", "soccer_colombia_primera_a",
     ],
     "tennis": [
         "tennis_atp_aus_open_singles", "tennis_atp_french_open", "tennis_atp_us_open",
@@ -35,21 +31,19 @@ SPORT_KEYS = {
     ],
 }
 
-# Up to 10 bookmaker keys count as one region in The Odds API.
-# Betano is included through its currently documented UK key. The actual
-# availability of Betano varies by sport and market, so the scanner also
-# accepts bookmaker titles containing "Betano".
+# The Odds API currently documents Betano under betano_uk.
+# Ten bookmaker keys are used so the request remains within one region-equivalent.
 BOOKMAKERS_BY_SPORT = {
     "nba": [
-        "betano_uk", "pinnacle", "betfair_ex_uk", "williamhill",
+        "betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill",
         "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
     ],
     "football": [
-        "betano_uk", "pinnacle", "betfair_ex_uk", "williamhill",
+        "betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill",
         "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
     ],
     "tennis": [
-        "betano_uk", "pinnacle", "betfair_ex_uk", "williamhill",
+        "betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill",
         "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
     ],
 }
@@ -118,17 +112,14 @@ class TheOddsAPIProvider(SportsProvider):
 
         if cache_key not in self._odds_cache:
             data = self._get(f"/sports/{event.competition}/odds", {
-                "regions": "uk",
                 "bookmakers": ",".join(self._bookmaker_keys(event.sport)),
                 "markets": ",".join(market_keys),
                 "oddsFormat": "decimal",
             })
             self._odds_cache[cache_key] = data
 
-        data = self._odds_cache[cache_key]
         quotes: list[MarketQuote] = []
-
-        for item in data:
+        for item in self._odds_cache[cache_key]:
             if item.get("id") != event.id:
                 continue
             for bookmaker in item.get("bookmakers", []):
