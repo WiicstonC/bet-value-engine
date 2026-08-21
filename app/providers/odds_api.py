@@ -31,8 +31,6 @@ SPORT_KEYS = {
     ],
 }
 
-# The Odds API currently documents Betano under betano_uk.
-# Ten bookmaker keys are used so the request remains within one region-equivalent.
 BOOKMAKERS_BY_SPORT = {
     "nba": [
         "betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill",
@@ -48,6 +46,10 @@ BOOKMAKERS_BY_SPORT = {
     ],
 }
 
+# Regions used only by the market-discovery endpoint. This endpoint lets the
+# engine learn which markets are actually visible before spending quota on odds.
+DISCOVERY_REGIONS = "uk,us"
+
 
 class TheOddsAPIProvider(SportsProvider):
     def __init__(self, api_key: str | None = None):
@@ -56,14 +58,18 @@ class TheOddsAPIProvider(SportsProvider):
             raise RuntimeError("Falta ODDS_API_KEY en las variables de entorno.")
         self.base_url = "https://api.the-odds-api.com/v4"
         self._odds_cache: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
+        self._event_odds_cache: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
+        self._markets_cache: dict[str, dict[str, set[str]]] = {}
         self.last_quota_remaining: str | None = None
         self.last_quota_used: str | None = None
+        self.last_quota_last: str | None = None
 
-    def _get(self, path: str, params: dict) -> list[dict]:
+    def _get(self, path: str, params: dict) -> list | dict:
         params = {**params, "apiKey": self.api_key}
         response = httpx.get(f"{self.base_url}{path}", params=params, timeout=25)
         self.last_quota_remaining = response.headers.get("x-requests-remaining")
         self.last_quota_used = response.headers.get("x-requests-used")
+        self.last_quota_last = response.headers.get("x-requests-last")
         response.raise_for_status()
         return response.json()
 
@@ -93,7 +99,6 @@ class TheOddsAPIProvider(SportsProvider):
                 event_id = item["id"]
                 if event_id in seen or not (start <= start_time <= end):
                     continue
-
                 seen.add(event_id)
                 events.append(Event(
                     id=event_id,
@@ -103,13 +108,32 @@ class TheOddsAPIProvider(SportsProvider):
                     away=item["away_team"],
                     start_time=start_time,
                 ))
-
         return events
+
+    def available_markets(self, event: Event) -> dict[str, set[str]]:
+        if event.id in self._markets_cache:
+            return self._markets_cache[event.id]
+
+        try:
+            data = self._get(
+                f"/sports/{event.competition}/events/{event.id}/markets",
+                {"regions": DISCOVERY_REGIONS},
+            )
+        except httpx.HTTPStatusError:
+            self._markets_cache[event.id] = {}
+            return {}
+
+        result: dict[str, set[str]] = {}
+        for bookmaker in data.get("bookmakers", []) if isinstance(data, dict) else []:
+            title = bookmaker.get("title", "")
+            result[title] = {market.get("key") for market in bookmaker.get("markets", []) if market.get("key")}
+
+        self._markets_cache[event.id] = result
+        return result
 
     def quotes(self, event: Event, markets: list[str]) -> list[MarketQuote]:
         market_keys = tuple(sorted(set(markets or ["h2h"])))
         cache_key = (event.competition, market_keys)
-
         if cache_key not in self._odds_cache:
             data = self._get(f"/sports/{event.competition}/odds", {
                 "bookmakers": ",".join(self._bookmaker_keys(event.sport)),
@@ -117,23 +141,52 @@ class TheOddsAPIProvider(SportsProvider):
                 "oddsFormat": "decimal",
             })
             self._odds_cache[cache_key] = data
+        return self._parse_quotes(self._odds_cache[cache_key], event.id)
+
+    def event_quotes(self, event: Event, markets: list[str]) -> list[MarketQuote]:
+        market_keys = tuple(sorted(set(markets)))
+        if not market_keys:
+            return []
+
+        cache_key = (event.id, market_keys)
+        if cache_key not in self._event_odds_cache:
+            data = self._get(
+                f"/sports/{event.competition}/events/{event.id}/odds",
+                {
+                    "bookmakers": ",".join(self._bookmaker_keys(event.sport)),
+                    "markets": ",".join(market_keys),
+                    "oddsFormat": "decimal",
+                },
+            )
+            self._event_odds_cache[cache_key] = data
+        return self._parse_quotes(self._event_odds_cache[cache_key], event.id)
+
+    @staticmethod
+    def _parse_quotes(data: list | dict, event_id: str) -> list[MarketQuote]:
+        if isinstance(data, dict):
+            items = [data]
+        else:
+            items = data
 
         quotes: list[MarketQuote] = []
-        for item in self._odds_cache[cache_key]:
-            if item.get("id") != event.id:
-                continue
+        for item in items:
             for bookmaker in item.get("bookmakers", []):
                 for market in bookmaker.get("markets", []):
                     for outcome in market.get("outcomes", []):
+                        selection = outcome.get("name", "")
+                        # Player props commonly identify the player in `description`.
+                        description = outcome.get("description")
+                        if description:
+                            selection = f"{description} | {selection}"
                         quotes.append(MarketQuote(
-                            event_id=event.id,
+                            event_id=event_id,
                             market=market["key"],
-                            selection=outcome["name"],
+                            selection=selection,
                             line=outcome.get("point"),
                             odds=float(outcome["price"]),
                             bookmaker=bookmaker["title"],
                             updated_at=datetime.fromisoformat(
-                                market.get("last_update", item["commence_time"]).replace("Z", "+00:00")
+                                market.get("last_update", item.get("commence_time")).replace("Z", "+00:00")
                             ),
                         ))
         return quotes
