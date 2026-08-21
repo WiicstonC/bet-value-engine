@@ -30,13 +30,27 @@ class Scanner:
             return "betano" in title
         return title == wanted or wanted in title
 
+    def _minutes_to_start(self, start_time: datetime, now: datetime) -> float:
+        return (start_time - now).total_seconds() / 60
+
     def _in_alert_window(self, start_time: datetime, now: datetime) -> bool:
-        minutes_to_start = (start_time - now).total_seconds() / 60
+        minutes_to_start = self._minutes_to_start(start_time, now)
         tolerance = max(self.config.scan_interval_minutes / 2, 2)
-        return any(
-            abs(minutes_to_start - target) <= tolerance
-            for target in self.config.alerts.minutes_before_start
-        )
+        return any(abs(minutes_to_start - target) <= tolerance
+                   for target in self.config.alerts.minutes_before_start)
+
+    def _markets_for_event(self, event_start: datetime, now: datetime, alert_only: bool) -> list[str]:
+        configured = self.config.watchlist.markets
+        if not alert_only:
+            return configured
+
+        minutes = self._minutes_to_start(event_start, now)
+        # Preserve quota on the frequent 10-minute scheduler. We use the
+        # cheap match-winner market for early checks and open all configured
+        # featured markets only near kickoff, when the signal is actionable.
+        if minutes <= 20:
+            return configured
+        return ["h2h"] if "h2h" in configured else configured[:1]
 
     def scan(
         self,
@@ -56,9 +70,10 @@ class Scanner:
                 if not matches_watchlist(event, self.config.watchlist):
                     continue
 
+                markets = self._markets_for_event(event.start_time, start, alert_only)
                 quotes = [
-                    q for q in self.provider.quotes(event, self.config.watchlist.markets)
-                    if market_allowed(q, self.config.watchlist.markets)
+                    q for q in self.provider.quotes(event, markets)
+                    if market_allowed(q, markets)
                 ]
                 if not quotes:
                     continue
