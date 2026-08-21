@@ -43,7 +43,7 @@ jobs:
 
       - name: Persist Telegram update offset
         run: |
-          if git diff --quiet -- data/telegram_offset.json; then
+          if [ -z "$(git status --porcelain -- data/telegram_offset.json)" ]; then
             echo "Sin cambios de offset"
             exit 0
           fi
