@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+import argparse
 
 from app.alerts.manager import AlertManager, alert_due
 from app.alerts.telegram import TelegramAlertSender
@@ -8,16 +8,29 @@ from app.providers.odds_api import TheOddsAPIProvider
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Bet Value Scanner")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Analiza toda la ventana configurada en lugar de solo ventanas de alerta.",
+    )
+    args = parser.parse_args()
+
     provider = TheOddsAPIProvider()
     scanner = Scanner(provider, DEFAULT_CONFIG)
+    alert_only = not args.full
 
     print("=== BET VALUE SCANNER ===")
+    print(f"Modo: {'ALERTA' if alert_only else 'ANÁLISIS COMPLETO'}")
     print(f"Sports: {', '.join(DEFAULT_CONFIG.watchlist.sports)}")
     print(f"Ventana: {DEFAULT_CONFIG.watch_hours}h")
     print(f"Mercados: {', '.join(DEFAULT_CONFIG.watchlist.markets)}")
     print(f"Bookmaker objetivo: {', '.join(DEFAULT_CONFIG.watchlist.bookmakers)}")
 
-    candidates = scanner.scan(hours=DEFAULT_CONFIG.watch_hours)
+    candidates = scanner.scan(
+        hours=DEFAULT_CONFIG.watch_hours,
+        alert_only=alert_only,
+    )
     print(f"Candidatos con valor encontrados: {len(candidates)}")
 
     for index, candidate in enumerate(candidates[:10], start=1):
