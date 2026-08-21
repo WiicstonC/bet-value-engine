@@ -19,12 +19,19 @@ def _fallback(event: Event) -> str:
     return "⚽ Partido para vigilar. No asumimos ganador todavía; primero conviene revisar contexto, ritmo, goles, córners y tarjetas para encontrar el mercado con mayor probabilidad."
 
 
-def generate_preanalysis(events: list[Event], max_events: int = 10) -> dict[str, str]:
-    """Generate a qualitative shortlist without spending Odds API credits.
+def _output_text(data: dict) -> str:
+    parts = []
+    for item in data.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "output_text" and content.get("text"):
+                parts.append(content["text"])
+    return "\n".join(parts).strip()
 
-    The model may use web search for current context. Odds are deliberately not
-    included: this stage decides which events deserve an expensive market scan.
-    """
+
+def generate_preanalysis(events: list[Event], max_events: int = 10) -> dict[str, str]:
+    """Generate a qualitative shortlist without spending Odds API credits."""
     if not events:
         return {}
 
@@ -32,34 +39,26 @@ def generate_preanalysis(events: list[Event], max_events: int = 10) -> dict[str,
     if not api_key:
         return {event.id: _fallback(event) for event in events[:max_events]}
 
+    valid_ids = {event.id for event in events}
     payload_events = [
-        {
-            "id": event.id,
-            "sport": event.sport,
-            "competition": event.competition,
-            "home": event.home,
-            "away": event.away,
-            "start_utc": event.start_time.isoformat(),
-        }
-        for event in events
+        {"id": e.id, "sport": e.sport, "competition": e.competition, "home": e.home, "away": e.away, "start_utc": e.start_time.isoformat()}
+        for e in events
     ]
 
     prompt = f"""
 Eres el analista principal de un motor privado de apuestas deportivas. Tu trabajo en esta etapa NO es recomendar una apuesta ni inventar probabilidades. Debes hacer un preanálisis cualitativo para decidir qué partidos merecen gastar créditos en una consulta profunda de mercados.
 
 Hoy es {datetime.utcnow().date().isoformat()}.
-Deportes vigilados: tenis, fútbol y NBA.
-
 Reglas:
-- Investiga en la web solo si ayuda a conocer contexto actual: forma reciente, lesiones/bajas, rotaciones, superficie, calendario, descanso, noticias relevantes y situación competitiva.
+- Usa web search para comprobar contexto actual cuando sea útil: forma reciente, lesiones/bajas, rotaciones, superficie, calendario, descanso, noticias y situación competitiva.
 - No uses cuotas todavía y no inventes cuotas.
 - No afirmes datos que no puedas verificar.
-- No te limites a ganador. Señala qué familias de mercados podrían ser interesantes: ganador, handicap/spread, juegos/sets, aces/dobles faltas, goles, córners, tarjetas, tiros, tiros a puerta, puntos, rebotes, asistencias, triples, etc., según deporte.
-- Si no ves una razón clara para estudiar un evento, dilo.
-- Selecciona como máximo {max_events} eventos de mayor interés para un análisis profundo.
-- La salida debe ser JSON válido con la clave "events". Cada elemento debe tener: id, priority (1-100), verdict ("ESTUDIAR" o "PASAR"), preanalysis (máximo 420 caracteres), markets_to_check (lista de hasta 5 mercados), reason (máximo 220 caracteres).
+- No te limites a ganador. Señala familias de mercados potencialmente interesantes: ganador, handicap/spread, juegos/sets, aces/dobles faltas, goles, córners, tarjetas, tiros, tiros a puerta, puntos, rebotes, asistencias, triples, etc.
+- Si no existe una razón clara para estudiar un evento, marca PASAR.
+- Selecciona como máximo {max_events} eventos.
+- Devuelve JSON con clave events. Cada elemento: id, priority 1-100, verdict ESTUDIAR/PASAR, preanalysis <=420 caracteres, markets_to_check <=5, reason <=220 caracteres.
 
-Eventos disponibles:
+EVENTOS:
 {json.dumps(payload_events, ensure_ascii=False, indent=2)}
 """
 
@@ -108,15 +107,13 @@ Eventos disponibles:
             timeout=90,
         )
         response.raise_for_status()
-        data = response.json()
-        text = data.get("output_text", "")
-        parsed = json.loads(text)
+        parsed = json.loads(_output_text(response.json()))
         result: dict[str, str] = {}
         for item in parsed.get("events", []):
             if item.get("verdict") != "ESTUDIAR":
                 continue
             event_id = str(item.get("id", ""))
-            if event_id not in {event.id for event in events}:
+            if event_id not in valid_ids:
                 continue
             markets = ", ".join(item.get("markets_to_check", [])[:5])
             result[event_id] = (
