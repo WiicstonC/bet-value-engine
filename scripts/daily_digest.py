@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from app.alerts.manager import AlertManager
 from app.alerts.telegram import TelegramAlertSender
+from app.analysis.preanalysis import generate_preanalysis
 from app.config import DEFAULT_CONFIG
 from app.providers.odds_api import TheOddsAPIProvider
 
@@ -22,14 +23,19 @@ def main() -> None:
     unique = {event.id: event for event in events}
     events = sorted(unique.values(), key=lambda event: event.start_time)
 
+    # AI preanalysis is intentionally separated from odds discovery. It decides
+    # which events deserve an expensive deep market request later.
+    preanalysis = generate_preanalysis(events, max_events=min(10, config.daily_digest.max_events_per_message))
+
     print("=== BET VALUE DAILY DIGEST ===")
     print(f"Sports: {', '.join(config.watchlist.sports)}")
     print(f"Eventos del periodo: {len(events)}")
+    print(f"Preanálisis AI: {len(preanalysis)} eventos")
     print("Odds consultadas: 0")
     print(f"API key activa: {provider.active_key_number}")
 
     manager = AlertManager(TelegramAlertSender(), config)
-    sent = manager.send_daily_digest(events) if config.daily_digest.enabled else 0
+    sent = manager.send_daily_digest(events, preanalysis) if config.daily_digest.enabled else 0
     print(f"Mensajes Telegram enviados: {sent}")
 
 
