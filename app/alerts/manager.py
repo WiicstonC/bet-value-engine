@@ -50,6 +50,8 @@ class AlertManager:
     def notify(self, candidates: list[Candidate]) -> int:
         sent = 0
         for candidate in candidates:
+            if sent >= self.config.alerts.max_alerts_per_scan:
+                break
             if not alert_due(candidate, self.config.alerts, self.config.scan_interval_minutes):
                 continue
             if self.sender.send(format_candidate(candidate, self.config.timezone)):
