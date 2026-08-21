@@ -69,5 +69,12 @@
     "minimum_expected_value": 0.05,
     "minimum_consensus_bookmakers": 3,
     "max_alerts_per_scan": 5
+  },
+  "deep_scan": {
+    "enabled": true,
+    "minutes_before_start": 60,
+    "max_events_per_run": 8,
+    "max_markets_per_event": 6,
+    "only_if_target_bookmaker_has_market": true
   }
 }
