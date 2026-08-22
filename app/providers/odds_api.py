@@ -32,42 +32,29 @@ SPORT_KEYS = {
 }
 
 BOOKMAKERS_BY_SPORT = {
-    "nba": [
-        "betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill",
-        "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
-    ],
-    "football": [
-        "betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill",
-        "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
-    ],
-    "tennis": [
-        "betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill",
-        "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk",
-    ],
+    "nba": ["betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill", "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk"],
+    "football": ["betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill", "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk"],
+    "tennis": ["betano_uk", "betfair_ex_uk", "betfair_sb_uk", "williamhill", "unibet_uk", "betvictor", "betway", "sport888", "betfred_uk", "ladbrokes_uk"],
 }
 
-# One region is intentional: discovery is now a low-cost gate, not a full odds scan.
 DISCOVERY_REGIONS = "uk"
 
 
 class TheOddsAPIProvider(SportsProvider):
     def __init__(self, api_key: str | None = None):
-        configured = [
-            os.getenv(name, "").strip()
-            for name in ("ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3")
-        ]
+        configured = [os.getenv(name, "").strip() for name in ("ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3")]
         configured = [key for key in configured if key]
         if api_key:
             configured = [api_key] + [key for key in configured if key != api_key]
         if not configured:
             raise RuntimeError("Falta al menos una ODDS_API_KEY en las variables de entorno.")
-
         self.api_keys = configured
         self.key_index = 0
         self.base_url = "https://api.the-odds-api.com/v4"
         self._odds_cache: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
         self._event_odds_cache: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
         self._markets_cache: dict[str, dict[str, set[str]]] = {}
+        self._scores_cache: dict[str, list[dict]] = {}
         self.last_quota_remaining: str | None = None
         self.last_quota_used: str | None = None
         self.last_quota_last: str | None = None
@@ -84,9 +71,8 @@ class TheOddsAPIProvider(SportsProvider):
             self.key_index = index
             self.last_key_index = index
             key = self.api_keys[index]
-            request_params = {**params, "apiKey": key}
             try:
-                response = httpx.get(f"{self.base_url}{path}", params=request_params, timeout=25)
+                response = httpx.get(f"{self.base_url}{path}", params={**params, "apiKey": key}, timeout=25)
                 self.last_quota_remaining = response.headers.get("x-requests-remaining")
                 self.last_quota_used = response.headers.get("x-requests-used")
                 self.last_quota_last = response.headers.get("x-requests-last")
@@ -94,88 +80,69 @@ class TheOddsAPIProvider(SportsProvider):
                 return response.json()
             except httpx.HTTPStatusError as exc:
                 last_error = exc
-                status = exc.response.status_code
-                if status not in {401, 403, 429} or index >= len(self.api_keys) - 1:
+                if exc.response.status_code not in {401, 403, 429} or index >= len(self.api_keys) - 1:
                     raise
                 self.failover_count += 1
-                continue
             except httpx.HTTPError as exc:
                 last_error = exc
                 raise
-
         if last_error:
             raise last_error
         raise RuntimeError("No hay claves de Odds API disponibles.")
 
     @staticmethod
     def _bookmaker_matches(title: str, wanted: str) -> bool:
-        title = title.lower().strip()
-        wanted = wanted.lower().strip()
-        if wanted == "betano":
-            return "betano" in title
-        return title == wanted or wanted in title
+        title, wanted = title.lower().strip(), wanted.lower().strip()
+        return "betano" in title if wanted == "betano" else title == wanted or wanted in title
 
     def _bookmaker_keys(self, sport: str) -> list[str]:
         return BOOKMAKERS_BY_SPORT.get(sport, BOOKMAKERS_BY_SPORT["football"])
 
     def upcoming_events(self, sport: str, start: datetime, end: datetime) -> list[Event]:
-        events: list[Event] = []
-        seen: set[str] = set()
-
+        events, seen = [], set()
         for sport_key in SPORT_KEYS.get(sport, []):
             try:
                 data = self._get(f"/sports/{sport_key}/events", {})
             except httpx.HTTPStatusError:
                 continue
-
             for item in data:
                 start_time = datetime.fromisoformat(item["commence_time"].replace("Z", "+00:00"))
                 event_id = item["id"]
                 if event_id in seen or not (start <= start_time <= end):
                     continue
                 seen.add(event_id)
-                events.append(Event(
-                    id=event_id,
-                    sport=sport,
-                    competition=sport_key,
-                    home=item["home_team"],
-                    away=item["away_team"],
-                    start_time=start_time,
-                ))
+                events.append(Event(id=event_id, sport=sport, competition=sport_key, home=item["home_team"], away=item["away_team"], start_time=start_time))
         return sorted(events, key=lambda event: event.start_time)
 
     def live_events(self, sport: str, now: datetime | None = None, lookback_minutes: int = 240) -> list[Event]:
         now = now or datetime.now(timezone.utc)
-        start = now.replace(microsecond=0)
-        from datetime import timedelta
-        start = start - timedelta(minutes=lookback_minutes)
-        events = self.upcoming_events(sport, start, now)
-        return [event for event in events if event.start_time <= now]
+        events = []
+        for sport_key in SPORT_KEYS.get(sport, []):
+            try:
+                data = self._get(f"/sports/{sport_key}/scores", {"daysFrom": 1})
+            except httpx.HTTPStatusError:
+                continue
+            for item in data:
+                commence = datetime.fromisoformat(item["commence_time"].replace("Z", "+00:00"))
+                if not item.get("completed") and commence <= now:
+                    events.append(Event(id=item["id"], sport=sport, competition=sport_key, home=item["home_team"], away=item["away_team"], start_time=commence))
+        return sorted({event.id: event for event in events}.values(), key=lambda event: event.start_time)
 
     def event_by_id(self, event_id: str, sport: str) -> Event | None:
-        now = datetime.now(timezone.utc)
         from datetime import timedelta
+        now = datetime.now(timezone.utc)
         events = self.upcoming_events(sport, now - timedelta(days=1), now + timedelta(days=3))
         return next((event for event in events if event.id == event_id), None)
 
     def available_markets(self, event: Event) -> dict[str, set[str]]:
         if event.id in self._markets_cache:
             return self._markets_cache[event.id]
-
         try:
-            data = self._get(
-                f"/sports/{event.competition}/events/{event.id}/markets",
-                {"regions": DISCOVERY_REGIONS},
-            )
+            data = self._get(f"/sports/{event.competition}/events/{event.id}/markets", {"regions": DISCOVERY_REGIONS})
         except httpx.HTTPStatusError:
             self._markets_cache[event.id] = {}
             return {}
-
-        result: dict[str, set[str]] = {}
-        for bookmaker in data.get("bookmakers", []) if isinstance(data, dict) else []:
-            title = bookmaker.get("title", "")
-            result[title] = {market.get("key") for market in bookmaker.get("markets", []) if market.get("key")}
-
+        result = {b.get("title", ""): {m.get("key") for m in b.get("markets", []) if m.get("key")} for b in data.get("bookmakers", []) if isinstance(data, dict)}
         self._markets_cache[event.id] = result
         return result
 
@@ -183,57 +150,76 @@ class TheOddsAPIProvider(SportsProvider):
         market_keys = tuple(sorted(set(markets or ["h2h"])))
         cache_key = (event.competition, market_keys)
         if cache_key not in self._odds_cache:
-            data = self._get(f"/sports/{event.competition}/odds", {
-                "bookmakers": ",".join(self._bookmaker_keys(event.sport)),
-                "markets": ",".join(market_keys),
-                "oddsFormat": "decimal",
-            })
-            self._odds_cache[cache_key] = data
+            self._odds_cache[cache_key] = self._get(f"/sports/{event.competition}/odds", {"bookmakers": ",".join(self._bookmaker_keys(event.sport)), "markets": ",".join(market_keys), "oddsFormat": "decimal"})
         return self._parse_quotes(self._odds_cache[cache_key], event.id)
 
     def event_quotes(self, event: Event, markets: list[str]) -> list[MarketQuote]:
         market_keys = tuple(sorted(set(markets)))
         if not market_keys:
             return []
-
         cache_key = (event.id, market_keys)
         if cache_key not in self._event_odds_cache:
-            data = self._get(
-                f"/sports/{event.competition}/events/{event.id}/odds",
-                {
-                    "bookmakers": ",".join(self._bookmaker_keys(event.sport)),
-                    "markets": ",".join(market_keys),
-                    "oddsFormat": "decimal",
-                },
-            )
-            self._event_odds_cache[cache_key] = data
+            self._event_odds_cache[cache_key] = self._get(f"/sports/{event.competition}/events/{event.id}/odds", {"bookmakers": ",".join(self._bookmaker_keys(event.sport)), "markets": ",".join(market_keys), "oddsFormat": "decimal"})
         return self._parse_quotes(self._event_odds_cache[cache_key], event.id)
+
+    def completed_event(self, event: Event) -> dict | None:
+        if event.competition not in self._scores_cache:
+            try:
+                data = self._get(f"/sports/{event.competition}/scores", {"daysFrom": 3})
+            except httpx.HTTPStatusError:
+                self._scores_cache[event.competition] = []
+                return None
+            self._scores_cache[event.competition] = data if isinstance(data, list) else []
+        return next((item for item in self._scores_cache[event.competition] if item.get("id") == event.id and item.get("completed")), None)
+
+    @staticmethod
+    def score_map(score_item: dict) -> dict[str, int]:
+        values = {}
+        for item in score_item.get("scores", []) or []:
+            try:
+                values[str(item.get("name"))] = int(float(item.get("score")))
+            except (TypeError, ValueError):
+                continue
+        return values
+
+    @staticmethod
+    def settle_score_market(row: dict, score_item: dict) -> str | None:
+        scores = TheOddsAPIProvider.score_map(score_item)
+        home, away = score_item.get("home_team"), score_item.get("away_team")
+        if home not in scores or away not in scores:
+            return None
+        home_score, away_score = scores[home], scores[away]
+        market, selection, line = str(row.get("market", "")).lower(), str(row.get("selection", "")), row.get("line")
+        if market == "h2h":
+            if selection == home:
+                return "won" if home_score > away_score else "lost" if home_score < away_score else "void"
+            if selection == away:
+                return "won" if away_score > home_score else "lost" if away_score < home_score else "void"
+            return None
+        if market in {"spreads", "alternate_spreads"} and line is not None:
+            margin = home_score - away_score if selection == home else away_score - home_score if selection == away else None
+            if margin is None:
+                return None
+            result = margin + float(line)
+            return "won" if result > 0 else "lost" if result < 0 else "void"
+        if market in {"totals", "alternate_totals"} and line is not None:
+            total = home_score + away_score
+            result = total - float(line) if selection.lower() == "over" else float(line) - total if selection.lower() == "under" else None
+            if result is None:
+                return None
+            return "won" if result > 0 else "lost" if result < 0 else "void"
+        return None
 
     @staticmethod
     def _parse_quotes(data: list | dict, event_id: str) -> list[MarketQuote]:
-        if isinstance(data, dict):
-            items = [data]
-        else:
-            items = data
-
-        quotes: list[MarketQuote] = []
+        items = [data] if isinstance(data, dict) else data
+        quotes = []
         for item in items:
             for bookmaker in item.get("bookmakers", []):
                 for market in bookmaker.get("markets", []):
                     for outcome in market.get("outcomes", []):
                         selection = outcome.get("name", "")
-                        description = outcome.get("description")
-                        if description:
-                            selection = f"{description} | {selection}"
-                        quotes.append(MarketQuote(
-                            event_id=event_id,
-                            market=market["key"],
-                            selection=selection,
-                            line=outcome.get("point"),
-                            odds=float(outcome["price"]),
-                            bookmaker=bookmaker["title"],
-                            updated_at=datetime.fromisoformat(
-                                market.get("last_update", item.get("commence_time")).replace("Z", "+00:00")
-                            ),
-                        ))
+                        if outcome.get("description"):
+                            selection = f"{outcome['description']} | {selection}"
+                        quotes.append(MarketQuote(event_id=event_id, market=market["key"], selection=selection, line=outcome.get("point"), odds=float(outcome["price"]), bookmaker=bookmaker["title"], updated_at=datetime.fromisoformat(market.get("last_update", item.get("commence_time")).replace("Z", "+00:00"))))
         return quotes
