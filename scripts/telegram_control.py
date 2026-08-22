@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -202,7 +203,6 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
         _send_pending(sender)
         return
     if command == "/estado":
-        import os
         configured = [name for name in ("ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3") if os.getenv(name)]
         sender.send(
             "💳 ESTADO\n\n"
@@ -306,10 +306,17 @@ def main() -> None:
     except Exception as exc:
         print(f"Webhook no disponible: {exc}")
     offset = _load_offset()
-    # Keep each Actions run short. GitHub's 5-minute schedule is the heartbeat;
-    # a short long-poll avoids a queue of overlapping/late runs.
     updates = sender.get_updates(offset=offset, limit=100, timeout=15)
     print(f"Telegram updates recibidos: {len(updates)}")
+
+    if os.getenv("TELEGRAM_HEARTBEAT", "false").lower() == "true" and not updates:
+        sender.send(
+            "🟢 BET VALUE ENGINE — CONTROL TELEGRAM ACTIVO\n\n"
+            "Polling conectado y listo para recibir comandos.\n"
+            "Prueba ahora: /menu\n\n"
+            "El próximo comando se procesará automáticamente; no necesitas entrar a GitHub."
+        )
+
     next_offset = offset
     for update in updates:
         update_id = int(update.get("update_id", 0))
