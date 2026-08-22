@@ -45,7 +45,7 @@ def _event_card(event, preanalysis: str) -> str:
         f"{event.sport.upper()} | {event.home} vs {event.away}\n"
         f"🕒 {local} Colombia\n\n"
         f"{preanalysis}\n\n"
-        "💳 La consulta profunda se hará solo si pulsas el botón."
+        "💳 Los mercados y cuotas solo se consultan si pulsas 🔬 Analizar a fondo."
     )
 
 
@@ -54,7 +54,11 @@ def _send_event_cards(sender: TelegramAlertSender, events, title: str) -> int:
         sender.send(f"{title}\n\nNo encontré eventos en la ventana solicitada.")
         return 0
     pre = generate_preanalysis(events, max_events=min(8, len(events)))
-    sent = sender.send(f"{title}\n\nEventos encontrados: {len(events)}\nCuotas/mercados especializados consultados: 0")
+    sent = sender.send(
+        f"{title}\n\nEventos encontrados: {len(events)}\n"
+        "🔎 Fase 1: contexto y selección de partidos.\n"
+        "💳 Fase 2: los mercados se consultan solo al pulsar el botón."
+    )
     for event in events:
         analysis = pre.get(event.id)
         if not analysis:
@@ -87,12 +91,13 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
     if command in {"/start", "/menu", "/ayuda", "/help"}:
         sender.send(
             "🤖 BET VALUE ENGINE\n\n"
-            "Desde ahora Telegram es el centro de control.\n\n"
+            "Telegram es el centro de control.\n\n"
             "📅 /agenda — agenda de hoy + preanálisis\n"
             "🌅 /manana — primeros partidos de mañana\n"
             "🔴 /vivo — eventos que están en vivo\n"
-            "💳 /estado — estado de las claves configuradas\n\n"
-            "🔬 Cada botón Analizar a fondo autoriza el consumo de Odds API."
+            "💳 /estado — estado de las claves\n\n"
+            "🔬 Cada botón autoriza una consulta profunda.\n"
+            "🧠 El objetivo del motor es estimar PROBABILIDAD, no perseguir cuotas."
         )
         return
     if command == "/agenda":
@@ -117,27 +122,51 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
             sender.send("🔴 EN VIVO\n\n" + "\n".join(f"{competition_flag(e)} {e.home} vs {e.away}" for e in events[:20]))
         return
     if command == "/estado":
-        configured = [name for name in ("ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3") if __import__("os").getenv(name)]
-        sender.send("💳 ESTADO\n\n" + "\n".join(f"✅ {name}" for name in configured) + f"\n\nClaves configuradas: {len(configured)}\n\nLas cuotas solo se consultan al solicitar análisis profundo.")
+        import os
+        configured = [name for name in ("ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3") if os.getenv(name)]
+        sender.send(
+            "💳 ESTADO\n\n"
+            + "\n".join(f"✅ {name}" for name in configured)
+            + f"\n\nClaves configuradas: {len(configured)}\n"
+            "\nLas cuotas especializadas solo se consultan al solicitar análisis profundo."
+        )
         return
     sender.send("❓ Comando no reconocido. Usa /menu para ver las opciones.")
 
 
 def _format_deep_result(event, candidates, scanner, provider) -> str:
-    header = f"🔬 ANÁLISIS PROFUNDO\n\n{competition_flag(event)} {competition_label(event)}\n{event.sport.upper()} | {event.home} vs {event.away}\n\n"
+    header = (
+        f"🔬 ANÁLISIS PROFUNDO\n\n"
+        f"{competition_flag(event)} {competition_label(event)}\n"
+        f"{event.sport.upper()} | {event.home} vs {event.away}\n\n"
+        "🎯 PRIORIDAD: PROBABILIDAD ESTIMADA\n"
+        "La cuota sirve para medir valor; no es el objetivo del modelo.\n\n"
+    )
     if not candidates:
-        body = "⚪ No apareció una selección con consenso suficiente entre casas independientes.\n\nEsto NO significa que no existan mercados interesantes; significa que el motor no tiene todavía suficiente consenso externo para valorar una cuota con confianza."
+        body = (
+            "⚪ No apareció una selección con consenso suficiente entre casas independientes.\n\n"
+            "Esto NO significa que el partido sea malo. Significa que todavía no tenemos una señal estadística suficientemente estable."
+        )
     else:
-        lines = ["🏆 MERCADOS MÁS INTERESANTES", ""]
+        lines = ["🏆 MERCADOS ORDENADOS POR SEÑAL", ""]
         for index, candidate in enumerate(candidates[:8], start=1):
             quote = candidate.quote
             line = f" {quote.line:g}" if quote.line is not None else ""
-            marker = "🟢" if candidate.edge >= 0.05 else "🟡" if candidate.edge >= 0 else "🔴"
-            lines.extend([f"{marker} #{index} {quote.market}{line}", f"   {quote.selection} @ {quote.odds:.2f} Betano", f"   Consenso: {candidate.model_probability:.1%} | Implícita: {candidate.implied_probability:.1%}", f"   Edge: {candidate.edge:+.1%} | EV: {candidate.expected_value:+.1%} | Conf.: {candidate.confidence:.0f}/100", f"   Casas independientes: {candidate.consensus_bookmakers}", ""])
+            marker = "🟢" if candidate.confidence >= 75 and candidate.edge >= 0.05 else "🟡" if candidate.confidence >= 60 else "🔴"
+            lines.extend([
+                f"{marker} #{index} {quote.market}{line}",
+                f"   {quote.selection}",
+                f"   🎯 Probabilidad estimada: {candidate.model_probability:.1%}",
+                f"   📊 Confianza de la señal: {candidate.confidence:.0f}/100",
+                f"   💰 Cuota Betano: {quote.odds:.2f}",
+                f"   📈 Ventaja estimada: {candidate.edge:+.1%} | EV: {candidate.expected_value:+.1%}",
+                f"   🏦 Casas independientes: {candidate.consensus_bookmakers}",
+                "",
+            ])
         body = "\n".join(lines).rstrip()
     markets = ", ".join(scanner.deep_market_hits.keys()) or "ninguno"
     quota = f"\n💳 Créditos restantes: {provider.last_quota_remaining}" if provider.last_quota_remaining is not None else ""
-    return header + body + f"\n\n📊 Mercados consultados: {markets}\n📦 Cuotas recibidas: {scanner.deep_quotes_received}{quota}\n\n⚠️ Análisis estadístico; no garantiza resultados."
+    return header + body + f"\n\n📊 Mercados consultados: {markets}\n📦 Cuotas recibidas: {scanner.deep_quotes_received}{quota}\n\n⚠️ Una probabilidad estimada nunca es garantía de resultado."
 
 
 def _process_callback(sender: TelegramAlertSender, update: dict) -> None:
@@ -182,7 +211,7 @@ def main() -> None:
     except Exception as exc:
         print(f"Webhook no disponible: {exc}")
     offset = _load_offset()
-    updates = sender.get_updates(offset=offset, limit=50, timeout=0)
+    updates = sender.get_updates(offset=offset, limit=50, timeout=240)
     print(f"Telegram updates recibidos: {len(updates)}")
     next_offset = offset
     for update in updates:
