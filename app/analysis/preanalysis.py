@@ -7,7 +7,6 @@ import httpx
 
 from app.models import Event
 
-
 MODEL = os.getenv("OPENAI_PREANALYSIS_MODEL", "gpt-5.6-luna")
 
 
@@ -21,25 +20,13 @@ def _fallback(event: Event) -> str:
 
 
 def _output_text(data: dict) -> str:
-    parts = []
-    for item in data.get("output", []):
-        if item.get("type") != "message":
-            continue
-        for content in item.get("content", []):
-            if content.get("type") == "output_text" and content.get("text"):
-                parts.append(content["text"])
-    return "\n".join(parts).strip()
+    return "\n".join(content["text"] for item in data.get("output", []) if item.get("type") == "message" for content in item.get("content", []) if content.get("type") == "output_text" and content.get("text")).strip()
 
 
 def _request(body: dict, api_key: str) -> httpx.Response:
-    last: httpx.Response | None = None
+    last = None
     for attempt in range(3):
-        response = httpx.post(
-            "https://api.openai.com/v1/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-            timeout=90,
-        )
+        response = httpx.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=body, timeout=90)
         last = response
         if response.status_code != 429:
             response.raise_for_status()
@@ -50,85 +37,23 @@ def _request(body: dict, api_key: str) -> httpx.Response:
         except ValueError:
             delay = 4.0 * (attempt + 1)
         time.sleep(delay)
-    assert last is not None
     last.raise_for_status()
     return last
 
 
 def generate_preanalysis(events: list[Event], max_events: int = 10) -> dict[str, str]:
-    """Generate a qualitative shortlist without spending Odds API credits."""
     if not events:
         return {}
-
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return {event.id: _fallback(event) for event in events[:max_events]}
-
     valid_ids = {event.id for event in events}
-    # Send only a bounded event list to the AI; the complete agenda is still sent to Telegram.
-    payload_events = [
-        {"id": e.id, "sport": e.sport, "competition": e.competition, "home": e.home, "away": e.away, "start_utc": e.start_time.isoformat()}
-        for e in events[:min(len(events), 30)]
-    ]
-
-    prompt = f"""
-Eres el analista principal de un motor privado de apuestas deportivas. En esta etapa NO recomiendas una apuesta ni inventas probabilidades. Haces un preanálisis cualitativo para decidir qué partidos merecen gastar créditos en una consulta profunda de mercados.
-
-Hoy es {datetime.utcnow().date().isoformat()}.
-Reglas:
-- Usa web search para comprobar contexto actual cuando sea útil: forma reciente, lesiones/bajas, rotaciones, superficie, calendario, descanso, noticias y situación competitiva.
-- No uses cuotas todavía y no inventes cuotas.
-- No afirmes datos que no puedas verificar.
-- No te limites a ganador. Señala familias de mercados potencialmente interesantes: ganador, handicap/spread, juegos/sets, aces/dobles faltas, goles, córners, tarjetas, tiros, tiros a puerta, puntos, rebotes, asistencias, triples, etc.
-- Si no existe una razón clara para estudiar un evento, marca PASAR.
-- Selecciona como máximo {max_events} eventos.
-- Devuelve JSON con clave events. Cada elemento: id, priority 1-100, verdict ESTUDIAR/PASAR, preanalysis <=420 caracteres, markets_to_check <=5, reason <=220 caracteres.
-
-EVENTOS:
-{json.dumps(payload_events, ensure_ascii=False, indent=2)}
-"""
-
-    body = {
-        "model": MODEL,
-        "tools": [{"type": "web_search", "search_context_size": "low"}],
-        "input": prompt,
-        "store": False,
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "sports_preanalysis",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "events": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": {"type": "string"},
-                                    "priority": {"type": "number"},
-                                    "verdict": {"type": "string"},
-                                    "preanalysis": {"type": "string"},
-                                    "markets_to_check": {"type": "array", "items": {"type": "string"}},
-                                    "reason": {"type": "string"},
-                                },
-                                "required": ["id", "priority", "verdict", "preanalysis", "markets_to_check", "reason"],
-                                "additionalProperties": False,
-                            },
-                        }
-                    },
-                    "required": ["events"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-    }
-
+    payload_events = [{"id": e.id, "sport": e.sport, "competition": e.competition, "home": e.home, "away": e.away, "start_utc": e.start_time.isoformat()} for e in events[:min(len(events), 30)]]
+    prompt = f"Eres el analista principal de un motor privado de apuestas deportivas. Haz un PREANÁLISIS cualitativo para decidir qué partidos merecen gastar créditos en una consulta profunda. NO recomiendes todavía una apuesta, no uses cuotas y no inventes probabilidades. Fecha UTC: {datetime.utcnow().date().isoformat()}. Usa búsqueda web para comprobar contexto actual cuando sea útil: forma, lesiones/bajas, rotaciones, superficie, calendario, descanso, noticias y situación competitiva. No afirmes datos no verificables. No te limites al ganador: señala familias de mercados potencialmente interesantes (ganador, handicap/spread, juegos/sets, aces/dobles faltas, goles, córners, tarjetas, tiros, tiros a puerta, puntos, rebotes, asistencias, triples). Si no hay razón clara, PASAR. Selecciona máximo {max_events}. Devuelve JSON con events: id, priority 1-100, verdict ESTUDIAR/PASAR, preanalysis <=420 caracteres, markets_to_check <=5, reason <=220 caracteres. EVENTOS: {json.dumps(payload_events, ensure_ascii=False)}"
+    body = {"model": MODEL, "tools": [{"type": "web_search", "search_context_size": "low"}], "input": prompt, "store": False, "text": {"format": {"type": "json_schema", "name": "sports_preanalysis", "strict": True, "schema": {"type": "object", "properties": {"events": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "priority": {"type": "number"}, "verdict": {"type": "string"}, "preanalysis": {"type": "string"}, "markets_to_check": {"type": "array", "items": {"type": "string"}}, "reason": {"type": "string"}}, "required": ["id", "priority", "verdict", "preanalysis", "markets_to_check", "reason"], "additionalProperties": False}}}, "required": ["events"], "additionalProperties": False}}}}
     try:
-        response = _request(body, api_key)
-        parsed = json.loads(_output_text(response.json()))
-        result: dict[str, str] = {}
+        parsed = json.loads(_output_text(_request(body, api_key).json()))
+        result = {}
         for item in parsed.get("events", []):
             if item.get("verdict") != "ESTUDIAR":
                 continue
@@ -136,11 +61,7 @@ EVENTOS:
             if event_id not in valid_ids:
                 continue
             markets = ", ".join(item.get("markets_to_check", [])[:5])
-            result[event_id] = (
-                f"🧠 {item.get('preanalysis', '').strip()}\n"
-                f"🔥 Mercados a vigilar: {markets or 'descubrir en análisis profundo'}\n"
-                f"Motivo: {item.get('reason', '').strip()}"
-            )
+            result[event_id] = f"🧠 {item.get('preanalysis', '').strip()}\n🔥 Mercados a vigilar: {markets or 'descubrir en análisis profundo'}\nMotivo: {item.get('reason', '').strip()}"
         return result
     except Exception as exc:
         print(f"AI preanalysis unavailable after retries: {exc}")
