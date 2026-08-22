@@ -5,16 +5,18 @@ on:
   push:
     branches: [main]
   schedule:
-    # GitHub Actions schedule is UTC. Colombia is UTC-5.
+    # GitHub Actions no permite una frecuencia menor de forma fiable que 5 min.
+    # El script mantiene el polling abierto durante casi todo ese intervalo.
     - cron: "*/5 * * * *"
 
 concurrency:
   group: telegram-control
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   control:
     runs-on: ubuntu-latest
+    timeout-minutes: 6
     permissions:
       contents: write
 
@@ -33,13 +35,6 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Ensure Telegram uses polling
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python -c "from app.alerts.telegram import TelegramAlertSender; s=TelegramAlertSender(); print('Telegram configurado:', s.enabled); s.delete_webhook(False); print('Polling listo')"
-
       - name: Process Telegram controls
         env:
           PYTHONPATH: .
@@ -50,9 +45,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TELEGRAM_HEARTBEAT: ${{ github.event_name == 'push' }}
+          TELEGRAM_POLL_SECONDS: "255"
         run: python -m scripts.telegram_control
 
       - name: Persist Telegram update offset
+        if: always()
         run: |
           if [ -z "$(git status --porcelain -- data/telegram_offset.json)" ]; then
             echo "Sin cambios de offset"
