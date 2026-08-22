@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -56,28 +57,37 @@ def _track_button(prediction_id: str) -> dict:
     return {"inline_keyboard": [[{"text": "🎯 Seguir este pronóstico", "callback_data": f"track|{prediction_id}"}]]}
 
 
+def _sport_context(event) -> str:
+    sport = event.sport.lower()
+    if sport == "tennis":
+        return "🎾 Tenis"
+    if sport == "nba":
+        return "🏀 NBA"
+    return "⚽ Fútbol"
+
+
 def _event_card(event, preanalysis: str) -> str:
-    local = event.start_time.astimezone(ZoneInfo(DEFAULT_CONFIG.timezone)).strftime("%d/%m %H:%M")
+    # Deliberadamente no mostramos cuota, mercado ni hora en el preanálisis.
+    # El objetivo de esta primera capa es que el usuario decida qué partido merece gastar créditos.
     return (
         f"{competition_flag(event)} {competition_label(event)}\n"
-        f"{event.sport.upper()} | {event.home} vs {event.away}\n"
-        f"🕒 {local} Colombia\n\n"
-        f"{preanalysis}\n\n"
-        "💳 Los mercados y cuotas solo se consultan si pulsas 🔬 Analizar a fondo."
+        f"{event.home} vs {event.away}\n\n"
+        f"{preanalysis.strip()}\n\n"
+        "👇 Si este partido te interesa, pulsa el botón para hacer el análisis profundo."
     )
 
 
 def _send_event_cards(sender: TelegramAlertSender, events, title: str) -> int:
     if not events:
-        sender.send(f"{title}\n\nNo encontré eventos en la ventana solicitada.")
+        sender.send(f"{title}\n\nNo encontré eventos en la ventana solicitada.", _menu_keyboard())
         return 0
     pre = generate_preanalysis(events, max_events=min(12, len(events)))
-    sent = sender.send(
-        f"{title}\n\nEventos encontrados: {len(events)}\n"
-        "🧠 Fase 1: preanálisis y búsqueda del mercado potencial.\n"
-        "💳 Fase 2: solo gastamos créditos cuando tú pulsas 🔬.\n\n"
-        "No buscamos únicamente ganador: el objetivo es encontrar el mercado con mayor probabilidad."
-    )
+    sent = int(sender.send(
+        f"{title}\n\n"
+        f"Encontré {len(events)} partidos.\n"
+        "🧠 El texto de cada partido es un preanálisis cualitativo.\n"
+        "💳 No consulto cuotas especializadas hasta que tú pulses 🔬 Analizar a fondo."
+    ))
     for event in events:
         analysis = pre.get(event.id)
         if not analysis:
@@ -109,16 +119,11 @@ def _send_learning_stats(sender: TelegramAlertSender) -> None:
     data = learning_stats()
     hit = f"{data['hit_rate']:.1%}" if data["hit_rate"] is not None else "—"
     lines = [
-        "🧠 BET VALUE ENGINE — APRENDIZAJE",
-        "",
+        "🧠 BET VALUE ENGINE — APRENDIZAJE", "",
         f"Predicciones registradas: {data['total']}",
-        f"Pendientes: {data['pending']}",
-        f"Resueltas: {data['resolved']}",
-        f"Aciertos: {data['wins']}",
-        f"Fallos: {data['losses']}",
-        f"Hit rate observado: {hit}",
-        "",
-        "📐 CALIBRACIÓN",
+        f"Pendientes: {data['pending']}", f"Resueltas: {data['resolved']}",
+        f"Aciertos: {data['wins']}", f"Fallos: {data['losses']}",
+        f"Hit rate observado: {hit}", "", "📐 CALIBRACIÓN",
     ]
     for bucket in data["calibration"]:
         lines.append(f"{bucket['range']}: pred. {bucket['predicted']:.1%} → real {bucket['actual']:.1%} ({bucket['count']})")
@@ -141,8 +146,7 @@ def _send_pending(sender: TelegramAlertSender) -> None:
             f"🎯 {row['home']} vs {row['away']}",
             f"{row['market']} | {row['selection']} {row['line'] if row['line'] is not None else ''}",
             f"Probabilidad: {float(row['model_probability']):.1%} | Cuota: {float(row['odds']):.2f}",
-            f"Inicio: {local}",
-            "",
+            f"Inicio: {local}", "",
         ])
     sender.send("\n".join(lines).rstrip(), _menu_keyboard())
 
@@ -150,19 +154,14 @@ def _send_pending(sender: TelegramAlertSender) -> None:
 def _handle_command(sender: TelegramAlertSender, text: str) -> None:
     normalized = text.strip().lower()
     aliases = {
-        "🌅 mañana": "/manana",
-        "📅 agenda": "/agenda",
-        "🔴 en vivo": "/vivo",
-        "🧠 aprendizaje": "/aprendizaje",
-        "⏳ pendientes": "/pendientes",
-        "💳 estado": "/estado",
+        "🌅 mañana": "/manana", "📅 agenda": "/agenda", "🔴 en vivo": "/vivo",
+        "🧠 aprendizaje": "/aprendizaje", "⏳ pendientes": "/pendientes", "💳 estado": "/estado",
     }
     normalized = aliases.get(normalized, normalized)
-    command = normalized.split()[0].split("@")[0]
+    command = normalized.split()[0].split("@")[0] if normalized.split() else ""
     if command in {"/start", "/menu", "/ayuda", "/help"}:
         sender.send(
-            "🤖 BET VALUE ENGINE\n\n"
-            "Telegram es el centro de control.\n\n"
+            "🤖 BET VALUE ENGINE\n\nTelegram es el centro de control.\n\n"
             "🌅 /manana — primeros partidos de mañana\n"
             "📅 /agenda — agenda de hoy + preanálisis\n"
             "🔴 /vivo — eventos en vivo\n"
@@ -170,7 +169,7 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
             "⏳ /pendientes — pronósticos en seguimiento\n"
             "💳 /estado — estado de las claves\n\n"
             "🔬 Cada botón de análisis autoriza una consulta profunda.\n"
-            "🎯 El botón de seguimiento guarda el pronóstico para que el sistema aprenda del resultado.\n\n"
+            "🎯 El botón de seguimiento guarda el pronóstico para aprendizaje.\n\n"
             "⚠️ El motor registra y evalúa pronósticos; no realiza apuestas reales automáticamente.",
             _menu_keyboard(),
         )
@@ -194,7 +193,7 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
         if not events:
             sender.send("🔴 EN VIVO\n\nNo encontré eventos en vivo ahora mismo.", _menu_keyboard())
         else:
-            sender.send("🔴 EN VIVO\n\n" + "\n".join(f"{competition_flag(e)} {e.home} vs {e.away}" for e in events[:20]), _menu_keyboard())
+            sender.send("🔴 EN VIVO\n\n" + "\n".join(f"{competition_flag(e)} {competition_label(e)} — {e.home} vs {e.away}" for e in events[:20]), _menu_keyboard())
         return
     if command == "/aprendizaje":
         _send_learning_stats(sender)
@@ -205,10 +204,9 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
     if command == "/estado":
         configured = [name for name in ("ODDS_API_KEY", "ODDS_API_KEY_2", "ODDS_API_KEY_3") if os.getenv(name)]
         sender.send(
-            "💳 ESTADO\n\n"
-            + "\n".join(f"✅ {name}" for name in configured)
+            "💳 ESTADO\n\n" + "\n".join(f"✅ {name}" for name in configured)
             + f"\n\nClaves configuradas: {len(configured)}\n"
-            "\nLas cuotas especializadas solo se consultan al solicitar análisis profundo.",
+            "Las cuotas especializadas solo se consultan al solicitar análisis profundo.",
             _menu_keyboard(),
         )
         return
@@ -217,9 +215,9 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
 
 def _deep_messages(event, candidates, scanner, provider) -> list[tuple[str, dict | None]]:
     header = (
-        f"🔬 ANÁLISIS PROFUNDO\n\n"
+        "🔬 ANÁLISIS PROFUNDO\n\n"
         f"{competition_flag(event)} {competition_label(event)}\n"
-        f"{event.sport.upper()} | {event.home} vs {event.away}\n\n"
+        f"{event.home} vs {event.away}\n\n"
         "🎯 PRIORIDAD: PROBABILIDAD ESTIMADA\n"
         "La cuota se usa para medir valor; no es el objetivo del modelo."
     )
@@ -227,8 +225,7 @@ def _deep_messages(event, candidates, scanner, provider) -> list[tuple[str, dict
     if not candidates:
         messages.append((
             "⚪ No apareció una selección con consenso suficiente entre casas independientes.\n\n"
-            "El partido no queda descartado para siempre: simplemente no hay una señal suficientemente estable con los datos consultados.",
-            None,
+            "El partido no queda descartado: simplemente no hay una señal suficientemente estable con los datos consultados.", None,
         ))
         return messages
     for index, candidate in enumerate(candidates[:8], start=1):
@@ -237,15 +234,12 @@ def _deep_messages(event, candidates, scanner, provider) -> list[tuple[str, dict
         marker = "🟢" if candidate.confidence >= 75 and candidate.edge >= 0.05 else "🟡" if candidate.confidence >= 60 else "🔴"
         prediction_id = offer_candidate(candidate)
         text = "\n".join([
-            f"{marker} #{index} {quote.market}{line}",
-            f"🎯 {quote.selection}",
+            f"{marker} #{index} {quote.market}{line}", f"🎯 {quote.selection}",
             f"Probabilidad estimada: {candidate.model_probability:.1%}",
-            f"Confianza: {candidate.confidence:.0f}/100",
-            f"Cuota Betano: {quote.odds:.2f}",
+            f"Confianza: {candidate.confidence:.0f}/100", f"Cuota Betano: {quote.odds:.2f}",
             f"Ventaja: {candidate.edge:+.1%} | EV: {candidate.expected_value:+.1%}",
-            f"Casas independientes: {candidate.consensus_bookmakers}",
-            "",
-            "Pulsa el botón solo si quieres guardar este pronóstico para seguimiento y aprendizaje."
+            f"Casas independientes: {candidate.consensus_bookmakers}", "",
+            "Pulsa 🎯 solo si quieres guardar este pronóstico para seguimiento y aprendizaje.",
         ])
         messages.append((text, _track_button(prediction_id)))
     markets = ", ".join(scanner.deep_market_hits.keys()) or "ninguno"
@@ -297,26 +291,7 @@ def _process_callback(sender: TelegramAlertSender, update: dict) -> None:
         sender.send(text, markup)
 
 
-def main() -> None:
-    sender = TelegramAlertSender()
-    if not sender.enabled:
-        raise SystemExit("Telegram no está configurado.")
-    try:
-        sender.delete_webhook(False)
-    except Exception as exc:
-        print(f"Webhook no disponible: {exc}")
-    offset = _load_offset()
-    updates = sender.get_updates(offset=offset, limit=100, timeout=15)
-    print(f"Telegram updates recibidos: {len(updates)}")
-
-    if os.getenv("TELEGRAM_HEARTBEAT", "false").lower() == "true" and not updates:
-        sender.send(
-            "🟢 BET VALUE ENGINE — CONTROL TELEGRAM ACTIVO\n\n"
-            "Polling conectado y listo para recibir comandos.\n"
-            "Prueba ahora: /menu\n\n"
-            "El próximo comando se procesará automáticamente; no necesitas entrar a GitHub."
-        )
-
+def _process_updates(sender: TelegramAlertSender, updates: list[dict], offset: int | None) -> int | None:
     next_offset = offset
     for update in updates:
         update_id = int(update.get("update_id", 0))
@@ -332,9 +307,45 @@ def main() -> None:
         except Exception as exc:
             print(f"Error procesando update {update_id}: {exc}")
         next_offset = max(next_offset or 0, update_id + 1)
-    if next_offset is not None and next_offset != offset:
-        _save_offset(next_offset)
-        print(f"Telegram offset actualizado: {next_offset}")
+    return next_offset
+
+
+def main() -> None:
+    sender = TelegramAlertSender()
+    if not sender.enabled:
+        raise SystemExit("Telegram no está configurado.")
+    try:
+        sender.delete_webhook(False)
+    except Exception as exc:
+        print(f"Webhook no disponible: {exc}")
+
+    offset = _load_offset()
+    deadline = time.monotonic() + int(os.getenv("TELEGRAM_POLL_SECONDS", "255"))
+    processed = 0
+    first_cycle = True
+
+    while time.monotonic() < deadline:
+        try:
+            updates = sender.get_updates(offset=offset, limit=100, timeout=25)
+            if updates:
+                offset = _process_updates(sender, updates, offset)
+                processed += len(updates)
+                if offset is not None:
+                    _save_offset(offset)
+            elif first_cycle and os.getenv("TELEGRAM_HEARTBEAT", "false").lower() == "true":
+                sender.send(
+                    "🟢 BET VALUE ENGINE — CONTROL TELEGRAM ACTIVO\n\n"
+                    "Control conectado. Ya puedes usar /menu o /manana sin entrar a GitHub.\n"
+                    "Los botones 🔬 también se procesan desde Telegram."
+                )
+        except Exception as exc:
+            print(f"Telegram polling error: {exc}")
+            time.sleep(3)
+        first_cycle = False
+
+    if offset is not None:
+        _save_offset(offset)
+    print(f"Telegram control finalizado. Updates procesados: {processed}")
 
 
 if __name__ == "__main__":
