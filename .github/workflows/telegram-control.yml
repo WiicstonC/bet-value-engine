@@ -1,63 +1,10 @@
-name: Telegram Control
+name: Telegram Control (legacy disabled)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-  schedule:
-    # GitHub Actions no permite una frecuencia menor de forma fiable que 5 min.
-    # El script mantiene el polling abierto durante casi todo ese intervalo.
-    - cron: "*/5 * * * *"
-
-concurrency:
-  group: telegram-control
-  cancel-in-progress: true
 
 jobs:
-  control:
+  disabled:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt
-
-      - name: Process Telegram controls
-        env:
-          PYTHONPATH: .
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          ODDS_API_KEY_2: ${{ secrets.ODDS_API_KEY_2 }}
-          ODDS_API_KEY_3: ${{ secrets.ODDS_API_KEY_3 }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          TELEGRAM_HEARTBEAT: ${{ github.event_name == 'push' }}
-          TELEGRAM_POLL_SECONDS: "255"
-        run: python -m scripts.telegram_control
-
-      - name: Persist Telegram update offset
-        if: always()
-        run: |
-          if [ -z "$(git status --porcelain -- data/telegram_offset.json)" ]; then
-            echo "Sin cambios de offset"
-            exit 0
-          fi
-          git config user.name "bet-value-engine[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main
-          git add -- data/telegram_offset.json
-          git commit -m "chore: persist Telegram control offset [skip ci]"
-          git push origin main
+      - run: echo "Legacy Telegram control disabled. Use telegram-bot.yml."
