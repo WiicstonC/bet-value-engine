@@ -2,6 +2,8 @@ name: Telegram Control
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
     # GitHub Actions schedule is UTC. Colombia is UTC-5.
     - cron: "*/5 * * * *"
@@ -36,7 +38,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -c "from app.alerts.telegram import TelegramAlertSender; s=TelegramAlertSender(); s.delete_webhook(False); print('Telegram polling listo')"
+          python -c "from app.alerts.telegram import TelegramAlertSender; s=TelegramAlertSender(); print('Telegram configurado:', s.enabled); s.delete_webhook(False); print('Polling listo')"
 
       - name: Process Telegram controls
         env:
