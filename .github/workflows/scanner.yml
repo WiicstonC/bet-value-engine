@@ -1,10 +1,14 @@
 name: Bet Value Scanner
 
+# Scanner automático desactivado deliberadamente.
+# El control de eventos ahora ocurre desde Telegram cuando el usuario lo solicita.
+# Los modos históricos siguen disponibles manualmente desde GitHub Actions.
+
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Modo de ejecución"
+        description: "Modo de ejecución manual"
         required: true
         default: "digest"
         type: choice
@@ -15,7 +19,7 @@ on:
           - test_telegram
           - full
       sport:
-        description: "Solo para analyze: tennis, football o nba"
+        description: "Solo para analyze"
         required: false
         default: "football"
         type: choice
@@ -24,43 +28,28 @@ on:
           - football
           - nba
       event_id:
-        description: "Solo para analyze: Event ID enviado por Telegram"
+        description: "Solo para analyze"
         required: false
         type: string
-  push:
-    branches: [main]
-  schedule:
-    - cron: "0 6 * * *"
-      timezone: "America/Bogota"
-    - cron: "*/10 * * * *"
-      timezone: "America/Bogota"
-
-concurrency:
-  group: bet-value-${{ github.event.schedule || github.run_id }}
-  cancel-in-progress: true
 
 jobs:
   scan:
-    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[telegram-digest]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
-
-      - name: Validate runtime configuration
+      - name: Validate and run selected manual mode
         env:
+          PYTHONPATH: .
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           ODDS_API_KEY_2: ${{ secrets.ODDS_API_KEY_2 }}
           ODDS_API_KEY_3: ${{ secrets.ODDS_API_KEY_3 }}
@@ -68,61 +57,17 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python -c "import os; print('ODDS_API_KEY:', bool(os.getenv('ODDS_API_KEY'))); print('ODDS_API_KEY_2:', bool(os.getenv('ODDS_API_KEY_2'))); print('ODDS_API_KEY_3:', bool(os.getenv('ODDS_API_KEY_3'))); print('OPENAI_API_KEY:', bool(os.getenv('OPENAI_API_KEY'))); print('TELEGRAM_BOT_TOKEN:', bool(os.getenv('TELEGRAM_BOT_TOKEN'))); print('TELEGRAM_CHAT_ID:', bool(os.getenv('TELEGRAM_CHAT_ID')))"
           python -m compileall -q app scripts tests
           python -m scripts.preflight
-
-      - name: Run unit tests
-        env:
-          PYTHONPATH: .
-        run: python -m pytest -q
-
-      - name: Run selected mode
-        env:
-          PYTHONPATH: .
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          ODDS_API_KEY_2: ${{ secrets.ODDS_API_KEY_2 }}
-          ODDS_API_KEY_3: ${{ secrets.ODDS_API_KEY_3 }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "0 6 * * *" ]; then
+          if [ "${{ inputs.mode }}" = "digest" ]; then
             python -m scripts.daily_digest
-          elif [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "*/10 * * * *" ]; then
+          elif [ "${{ inputs.mode }}" = "live" ]; then
             python -m scripts.live_scan
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "digest" ]; then
-            python -m scripts.daily_digest
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "live" ]; then
-            python -m scripts.live_scan
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "analyze" ]; then
+          elif [ "${{ inputs.mode }}" = "analyze" ]; then
             test -n "${{ inputs.event_id }}"
             python -m scripts.analyze_event --sport "${{ inputs.sport }}" --event-id "${{ inputs.event_id }}"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "test_telegram" ]; then
+          elif [ "${{ inputs.mode }}" = "test_telegram" ]; then
             python -m scripts.test_telegram
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            python -m scripts.daily_digest
           else
             python -m scripts.scan --full
           fi
-
-      - name: Persist live state
-        if: ${{ (github.event_name == 'schedule' && github.event.schedule == '*/10 * * * *') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'live') }}
-        run: |
-          changed=false
-          if ! git diff --quiet -- data/live_state.json; then
-            git add data/live_state.json
-            changed=true
-          fi
-          if ! git diff --quiet -- data/live_incidents.json; then
-            git add data/live_incidents.json
-            changed=true
-          fi
-          if [ "$changed" = "false" ]; then
-            echo "Sin cambios en estado live"
-            exit 0
-          fi
-          git config user.name "bet-value-engine[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: update live state [skip ci]"
-          git push
