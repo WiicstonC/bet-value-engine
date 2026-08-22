@@ -13,10 +13,10 @@ MODEL = os.getenv("OPENAI_PREANALYSIS_MODEL", "gpt-5.6-luna")
 def _fallback(event: Event) -> str:
     sport = event.sport.lower()
     if sport == "tennis":
-        return "🎾 VIGILAR. Antes de elegir ganador, revisar superficie, forma reciente, servicio/devolución, fatiga y H2H. Si el partido es parejo, juegos/sets, aces o dobles faltas pueden ofrecer mejor valor."
+        return "🎾 vigilar. Antes de elegir ganador, revisar superficie, forma reciente, servicio/devolución, fatiga y H2H. Si el partido es parejo, juegos/sets, aces o dobles faltas pueden ofrecer mejor valor."
     if sport == "nba":
-        return "🏀 VIGILAR. No limitarse al ganador: revisar ritmo, lesiones, minutos y matchup. Si el resultado es cerrado, puntos, rebotes, asistencias y triples pueden ser mercados más interesantes."
-    return "⚽ VIGILAR. No asumir ganador. Revisar forma, bajas, local/visitante y contexto; después comparar goles, córners, tarjetas, tiros y tiros a puerta para encontrar el mercado con mejor perfil."
+        return "🏀 vigilar. No limitarse al ganador: revisar ritmo, lesiones, minutos y matchup. Si el resultado es cerrado, puntos, rebotes, asistencias y triples pueden ser mercados más interesantes."
+    return "⚽ vigilar. No asumir ganador. Revisar forma, bajas, local/visitante y contexto; después comparar goles, córners, tarjetas, tiros y tiros a puerta para encontrar el mercado con mejor perfil."
 
 
 def _output_text(data: dict) -> str:
