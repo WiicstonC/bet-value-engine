@@ -1,5 +1,6 @@
 from collections import defaultdict
 
+from app.core.probability_engine import estimate_consensus_probability
 from app.models import MarketQuote
 
 
@@ -23,7 +24,7 @@ def consensus_probabilities(
     quotes: list[MarketQuote],
     excluded_bookmaker: str = "Betano",
 ) -> dict[tuple[str, float | None, str], tuple[float, int, float]]:
-    """Build a de-vigged consensus across independent bookmakers.
+    """Build a conservative de-vigged probability consensus.
 
     Returns key -> (probability, bookmaker_count, dispersion).
     The target bookmaker is excluded so its own price does not manufacture
@@ -56,8 +57,7 @@ def consensus_probabilities(
 
     result: dict[tuple[str, float | None, str], tuple[float, int, float]] = {}
     for key, probabilities in grouped.items():
-        mean = sum(probabilities) / len(probabilities)
-        variance = sum((p - mean) ** 2 for p in probabilities) / len(probabilities)
-        result[key] = (mean, len(probabilities), variance ** 0.5)
+        estimate = estimate_consensus_probability(probabilities)
+        result[key] = (estimate.probability, estimate.sample_size, estimate.dispersion)
 
     return result
