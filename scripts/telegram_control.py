@@ -8,6 +8,7 @@ from app.alerts.telegram import TelegramAlertSender
 from app.analysis.preanalysis import generate_preanalysis
 from app.config import DEFAULT_CONFIG
 from app.engine.scanner import Scanner
+from app.learning.ledger import offer_candidate, register_offer, stats as learning_stats
 from app.providers.odds_api import TheOddsAPIProvider
 
 STATE_PATH = Path(__file__).resolve().parent.parent / "data" / "telegram_offset.json"
@@ -34,8 +35,24 @@ def _safe_callback_answer(sender: TelegramAlertSender, callback_id: str, text: s
         print(f"Callback answer no disponible: {exc}")
 
 
+def _menu_keyboard() -> dict:
+    return {
+        "keyboard": [
+            [{"text": "🌅 Mañana"}, {"text": "📅 Agenda"}],
+            [{"text": "🔴 En vivo"}, {"text": "🧠 Aprendizaje"}],
+            [{"text": "⏳ Pendientes"}, {"text": "💳 Estado"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
 def _button(sport: str, event_id: str) -> dict:
     return {"inline_keyboard": [[{"text": "🔬 Analizar a fondo", "callback_data": f"deep|{sport}|{event_id}"}]]}
+
+
+def _track_button(prediction_id: str) -> dict:
+    return {"inline_keyboard": [[{"text": "🎯 Seguir este pronóstico", "callback_data": f"track|{prediction_id}"}]]}
 
 
 def _event_card(event, preanalysis: str) -> str:
@@ -53,11 +70,12 @@ def _send_event_cards(sender: TelegramAlertSender, events, title: str) -> int:
     if not events:
         sender.send(f"{title}\n\nNo encontré eventos en la ventana solicitada.")
         return 0
-    pre = generate_preanalysis(events, max_events=min(8, len(events)))
+    pre = generate_preanalysis(events, max_events=min(12, len(events)))
     sent = sender.send(
         f"{title}\n\nEventos encontrados: {len(events)}\n"
-        "🔎 Fase 1: contexto y selección de partidos.\n"
-        "💳 Fase 2: los mercados se consultan solo al pulsar el botón."
+        "🧠 Fase 1: preanálisis y búsqueda del mercado potencial.\n"
+        "💳 Fase 2: solo gastamos créditos cuando tú pulsas 🔬.\n\n"
+        "No buscamos únicamente ganador: el objetivo es encontrar el mercado con mayor probabilidad."
     )
     for event in events:
         analysis = pre.get(event.id)
@@ -67,7 +85,7 @@ def _send_event_cards(sender: TelegramAlertSender, events, title: str) -> int:
     return sent
 
 
-def _fetch_window(day_offset: int = 0, first_hours: int | None = None, max_per_sport: int = 4):
+def _fetch_window(day_offset: int = 0, first_hours: int | None = None, max_per_sport: int = 6):
     provider = TheOddsAPIProvider()
     tz = ZoneInfo(DEFAULT_CONFIG.timezone)
     now = datetime.now(tz)
@@ -86,18 +104,74 @@ def _fetch_window(day_offset: int = 0, first_hours: int | None = None, max_per_s
     return provider, sorted(unique.values(), key=lambda e: e.start_time)
 
 
+def _send_learning_stats(sender: TelegramAlertSender) -> None:
+    data = learning_stats()
+    hit = f"{data['hit_rate']:.1%}" if data["hit_rate"] is not None else "—"
+    lines = [
+        "🧠 BET VALUE ENGINE — APRENDIZAJE",
+        "",
+        f"Predicciones registradas: {data['total']}",
+        f"Pendientes: {data['pending']}",
+        f"Resueltas: {data['resolved']}",
+        f"Aciertos: {data['wins']}",
+        f"Fallos: {data['losses']}",
+        f"Hit rate observado: {hit}",
+        "",
+        "📐 CALIBRACIÓN",
+    ]
+    for bucket in data["calibration"]:
+        lines.append(f"{bucket['range']}: pred. {bucket['predicted']:.1%} → real {bucket['actual']:.1%} ({bucket['count']})")
+    if not data["calibration"]:
+        lines.append("Todavía necesitamos resultados reales para calibrar el modelo.")
+    lines.extend(["", "El motor guardará cada probabilidad y comparará su predicción con el resultado real."])
+    sender.send("\n".join(lines), _menu_keyboard())
+
+
+def _send_pending(sender: TelegramAlertSender) -> None:
+    from app.learning.ledger import pending
+    rows = pending()
+    if not rows:
+        sender.send("⏳ PREDICCIONES PENDIENTES\n\nNo hay pronósticos registrados esperando resultado.", _menu_keyboard())
+        return
+    lines = ["⏳ PREDICCIONES PENDIENTES", ""]
+    for row in rows[:20]:
+        local = datetime.fromisoformat(row["start_time"]).astimezone(ZoneInfo(DEFAULT_CONFIG.timezone)).strftime("%d/%m %H:%M")
+        lines.extend([
+            f"🎯 {row['home']} vs {row['away']}",
+            f"{row['market']} | {row['selection']} {row['line'] if row['line'] is not None else ''}",
+            f"Probabilidad: {float(row['model_probability']):.1%} | Cuota: {float(row['odds']):.2f}",
+            f"Inicio: {local}",
+            "",
+        ])
+    sender.send("\n".join(lines).rstrip(), _menu_keyboard())
+
+
 def _handle_command(sender: TelegramAlertSender, text: str) -> None:
-    command = text.strip().split()[0].lower().split("@")[0]
+    normalized = text.strip().lower()
+    aliases = {
+        "🌅 mañana": "/manana",
+        "📅 agenda": "/agenda",
+        "🔴 en vivo": "/vivo",
+        "🧠 aprendizaje": "/aprendizaje",
+        "⏳ pendientes": "/pendientes",
+        "💳 estado": "/estado",
+    }
+    normalized = aliases.get(normalized, normalized)
+    command = normalized.split()[0].split("@")[0]
     if command in {"/start", "/menu", "/ayuda", "/help"}:
         sender.send(
             "🤖 BET VALUE ENGINE\n\n"
             "Telegram es el centro de control.\n\n"
-            "📅 /agenda — agenda de hoy + preanálisis\n"
             "🌅 /manana — primeros partidos de mañana\n"
-            "🔴 /vivo — eventos que están en vivo\n"
+            "📅 /agenda — agenda de hoy + preanálisis\n"
+            "🔴 /vivo — eventos en vivo\n"
+            "🧠 /aprendizaje — resultados y calibración\n"
+            "⏳ /pendientes — pronósticos en seguimiento\n"
             "💳 /estado — estado de las claves\n\n"
-            "🔬 Cada botón autoriza una consulta profunda.\n"
-            "🧠 El objetivo del motor es estimar PROBABILIDAD, no perseguir cuotas."
+            "🔬 Cada botón de análisis autoriza una consulta profunda.\n"
+            "🎯 El botón de seguimiento guarda el pronóstico para que el sistema aprenda del resultado.\n\n"
+            "⚠️ El motor registra y evalúa pronósticos; no realiza apuestas reales automáticamente.",
+            _menu_keyboard(),
         )
         return
     if command == "/agenda":
@@ -105,7 +179,7 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
         _send_event_cards(sender, events, "📅 AGENDA DE HOY + PREANÁLISIS")
         return
     if command == "/manana":
-        _, events = _fetch_window(day_offset=1, first_hours=12, max_per_sport=5)
+        _, events = _fetch_window(day_offset=1, first_hours=14, max_per_sport=8)
         _send_event_cards(sender, events, "🌅 PRIMEROS PARTIDOS DE MAÑANA + PREANÁLISIS")
         return
     if command == "/vivo":
@@ -117,9 +191,15 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
         unique = {e.id: e for e in events}
         events = sorted(unique.values(), key=lambda e: e.start_time)
         if not events:
-            sender.send("🔴 EN VIVO\n\nNo encontré eventos en vivo ahora mismo.")
+            sender.send("🔴 EN VIVO\n\nNo encontré eventos en vivo ahora mismo.", _menu_keyboard())
         else:
-            sender.send("🔴 EN VIVO\n\n" + "\n".join(f"{competition_flag(e)} {e.home} vs {e.away}" for e in events[:20]))
+            sender.send("🔴 EN VIVO\n\n" + "\n".join(f"{competition_flag(e)} {e.home} vs {e.away}" for e in events[:20]), _menu_keyboard())
+        return
+    if command == "/aprendizaje":
+        _send_learning_stats(sender)
+        return
+    if command == "/pendientes":
+        _send_pending(sender)
         return
     if command == "/estado":
         import os
@@ -128,45 +208,50 @@ def _handle_command(sender: TelegramAlertSender, text: str) -> None:
             "💳 ESTADO\n\n"
             + "\n".join(f"✅ {name}" for name in configured)
             + f"\n\nClaves configuradas: {len(configured)}\n"
-            "\nLas cuotas especializadas solo se consultan al solicitar análisis profundo."
+            "\nLas cuotas especializadas solo se consultan al solicitar análisis profundo.",
+            _menu_keyboard(),
         )
         return
-    sender.send("❓ Comando no reconocido. Usa /menu para ver las opciones.")
+    sender.send("❓ Comando no reconocido. Pulsa /menu para mostrar el control.", _menu_keyboard())
 
 
-def _format_deep_result(event, candidates, scanner, provider) -> str:
+def _deep_messages(event, candidates, scanner, provider) -> list[tuple[str, dict | None]]:
     header = (
         f"🔬 ANÁLISIS PROFUNDO\n\n"
         f"{competition_flag(event)} {competition_label(event)}\n"
         f"{event.sport.upper()} | {event.home} vs {event.away}\n\n"
         "🎯 PRIORIDAD: PROBABILIDAD ESTIMADA\n"
-        "La cuota sirve para medir valor; no es el objetivo del modelo.\n\n"
+        "La cuota se usa para medir valor; no es el objetivo del modelo."
     )
+    messages: list[tuple[str, dict | None]] = [(header, None)]
     if not candidates:
-        body = (
+        messages.append((
             "⚪ No apareció una selección con consenso suficiente entre casas independientes.\n\n"
-            "Esto NO significa que el partido sea malo. Significa que todavía no tenemos una señal estadística suficientemente estable."
-        )
-    else:
-        lines = ["🏆 MERCADOS ORDENADOS POR SEÑAL", ""]
-        for index, candidate in enumerate(candidates[:8], start=1):
-            quote = candidate.quote
-            line = f" {quote.line:g}" if quote.line is not None else ""
-            marker = "🟢" if candidate.confidence >= 75 and candidate.edge >= 0.05 else "🟡" if candidate.confidence >= 60 else "🔴"
-            lines.extend([
-                f"{marker} #{index} {quote.market}{line}",
-                f"   {quote.selection}",
-                f"   🎯 Probabilidad estimada: {candidate.model_probability:.1%}",
-                f"   📊 Confianza de la señal: {candidate.confidence:.0f}/100",
-                f"   💰 Cuota Betano: {quote.odds:.2f}",
-                f"   📈 Ventaja estimada: {candidate.edge:+.1%} | EV: {candidate.expected_value:+.1%}",
-                f"   🏦 Casas independientes: {candidate.consensus_bookmakers}",
-                "",
-            ])
-        body = "\n".join(lines).rstrip()
+            "El partido no queda descartado para siempre: simplemente no hay una señal suficientemente estable con los datos consultados.",
+            None,
+        ))
+        return messages
+    for index, candidate in enumerate(candidates[:8], start=1):
+        quote = candidate.quote
+        line = f" {quote.line:g}" if quote.line is not None else ""
+        marker = "🟢" if candidate.confidence >= 75 and candidate.edge >= 0.05 else "🟡" if candidate.confidence >= 60 else "🔴"
+        prediction_id = offer_candidate(candidate)
+        text = "\n".join([
+            f"{marker} #{index} {quote.market}{line}",
+            f"🎯 {quote.selection}",
+            f"Probabilidad estimada: {candidate.model_probability:.1%}",
+            f"Confianza: {candidate.confidence:.0f}/100",
+            f"Cuota Betano: {quote.odds:.2f}",
+            f"Ventaja: {candidate.edge:+.1%} | EV: {candidate.expected_value:+.1%}",
+            f"Casas independientes: {candidate.consensus_bookmakers}",
+            "",
+            "Pulsa el botón solo si quieres guardar este pronóstico para seguimiento y aprendizaje."
+        ])
+        messages.append((text, _track_button(prediction_id)))
     markets = ", ".join(scanner.deep_market_hits.keys()) or "ninguno"
     quota = f"\n💳 Créditos restantes: {provider.last_quota_remaining}" if provider.last_quota_remaining is not None else ""
-    return header + body + f"\n\n📊 Mercados consultados: {markets}\n📦 Cuotas recibidas: {scanner.deep_quotes_received}{quota}\n\n⚠️ Una probabilidad estimada nunca es garantía de resultado."
+    messages.append((f"📊 Mercados consultados: {markets}\n📦 Cuotas recibidas: {scanner.deep_quotes_received}{quota}\n\n⚠️ Probabilidad estimada ≠ garantía de resultado.", None))
+    return messages
 
 
 def _process_callback(sender: TelegramAlertSender, update: dict) -> None:
@@ -178,7 +263,16 @@ def _process_callback(sender: TelegramAlertSender, update: dict) -> None:
         _safe_callback_answer(sender, callback_id, "No autorizado.", True)
         return
     parts = str(callback.get("data", "")).split("|", 2)
-    if len(parts) != 3 or parts[0] != "deep":
+    if len(parts) < 2:
+        _safe_callback_answer(sender, callback_id, "Acción no reconocida.", True)
+        return
+    if parts[0] == "track":
+        prediction_id = parts[1]
+        ok, result = register_offer(prediction_id)
+        _safe_callback_answer(sender, callback_id, result, not ok)
+        sender.send(("🟢 " if ok else "🟡 ") + result + "\n\nUsa 🧠 Aprendizaje para ver cómo evoluciona la calibración.", _menu_keyboard())
+        return
+    if parts[0] != "deep" or len(parts) != 3:
         _safe_callback_answer(sender, callback_id, "Acción no reconocida.", True)
         return
     sport, event_id = parts[1], parts[2]
@@ -195,11 +289,12 @@ def _process_callback(sender: TelegramAlertSender, update: dict) -> None:
     provider = TheOddsAPIProvider()
     event = provider.event_by_id(event_id, sport)
     if event is None:
-        sender.send("❌ No pude recuperar ese evento; puede haber expirado.")
+        sender.send("❌ No pude recuperar ese evento; puede haber expirado.", _menu_keyboard())
         return
     scanner = Scanner(provider, DEFAULT_CONFIG)
     candidates = scanner.explore_event(event, max_results=12)
-    sender.send(_format_deep_result(event, candidates, scanner, provider))
+    for text, markup in _deep_messages(event, candidates, scanner, provider):
+        sender.send(text, markup)
 
 
 def main() -> None:
@@ -219,8 +314,10 @@ def main() -> None:
         try:
             message = update.get("message") or {}
             chat_id = str((message.get("chat") or {}).get("id", ""))
-            if chat_id == str(sender.chat_id) and str(message.get("text", "")).startswith("/"):
-                _handle_command(sender, str(message["text"]))
+            if chat_id == str(sender.chat_id) and str(message.get("text", "")):
+                text = str(message["text"])
+                if text.startswith("/") or text in {"🌅 Mañana", "📅 Agenda", "🔴 En vivo", "🧠 Aprendizaje", "⏳ Pendientes", "💳 Estado"}:
+                    _handle_command(sender, text)
             elif update.get("callback_query"):
                 _process_callback(sender, update)
         except Exception as exc:
