@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,11 @@ def _write(rows: list[dict[str, Any]]) -> None:
     tmp.replace(LEDGER_PATH)
 
 
+def _prediction_id(candidate: Candidate) -> str:
+    raw = f"{candidate.event.id}|{candidate.quote.market}|{candidate.quote.selection}|{candidate.quote.line}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
         str(row.get("event_id", "")),
@@ -37,53 +43,71 @@ def _key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     )
 
 
-def register_candidate(candidate: Candidate) -> tuple[bool, str]:
-    """Register a prediction for paper tracking and future calibration.
+def _candidate_row(candidate: Candidate, status: str) -> dict[str, Any]:
+    return {
+        "prediction_id": _prediction_id(candidate),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "event_id": candidate.event.id,
+        "sport": candidate.event.sport,
+        "competition": candidate.event.competition,
+        "home": candidate.event.home,
+        "away": candidate.event.away,
+        "start_time": candidate.event.start_time.isoformat(),
+        "market": candidate.quote.market,
+        "selection": candidate.quote.selection,
+        "line": candidate.quote.line,
+        "odds": candidate.quote.odds,
+        "bookmaker": candidate.quote.bookmaker,
+        "model_probability": candidate.model_probability,
+        "implied_probability": candidate.implied_probability,
+        "edge": candidate.edge,
+        "expected_value": candidate.expected_value,
+        "confidence": candidate.confidence,
+        "consensus_bookmakers": candidate.consensus_bookmakers,
+        "consensus_dispersion": candidate.consensus_dispersion,
+        "status": status,
+        "outcome": None,
+        "resolved_at": None,
+        "resolution_source": None,
+    }
 
-    This deliberately does not place a real wager. It records the exact
-    probability/price snapshot so the engine can later compare its prediction
-    with the actual result and calibrate itself.
+
+def offer_candidate(candidate: Candidate) -> str:
+    """Persist a deep-analysis offer so Telegram can render a short callback."""
+    rows = _read()
+    key = _key(_candidate_row(candidate, "offered"))
+    for row in rows:
+        if _key(row) == key and row.get("status") in {"offered", "pending", "won", "lost", "void"}:
+            return str(row["prediction_id"])
+    row = _candidate_row(candidate, "offered")
+    rows.append(row)
+    _write(rows)
+    return str(row["prediction_id"])
+
+
+def register_offer(prediction_id: str) -> tuple[bool, str]:
+    """Move an offered prediction into the learning set.
+
+    This is paper tracking only; it never submits a wager to a bookmaker.
     """
     rows = _read()
-    key = (
-        candidate.event.id,
-        candidate.quote.market,
-        candidate.quote.selection,
-        str(candidate.quote.line),
-    )
-    if any(_key(row) == key and row.get("status") in {"pending", "won", "lost", "void"} for row in rows):
-        return False, "Ese pronóstico ya está registrado."
+    for row in rows:
+        if row.get("prediction_id") == prediction_id:
+            if row.get("status") == "pending":
+                return False, "Ese pronóstico ya está en seguimiento."
+            if row.get("status") in {"won", "lost", "void"}:
+                return False, "Ese pronóstico ya fue cerrado."
+            if row.get("status") == "offered":
+                row["status"] = "pending"
+                row["registered_at"] = datetime.now(timezone.utc).isoformat()
+                _write(rows)
+                return True, "Pronóstico registrado. Quedará guardado para aprender del resultado."
+    return False, "No encontré ese pronóstico; puede haber expirado."
 
-    rows.append(
-        {
-            "prediction_id": f"{candidate.event.id}:{candidate.quote.market}:{candidate.quote.selection}:{candidate.quote.line}",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "event_id": candidate.event.id,
-            "sport": candidate.event.sport,
-            "competition": candidate.event.competition,
-            "home": candidate.event.home,
-            "away": candidate.event.away,
-            "start_time": candidate.event.start_time.isoformat(),
-            "market": candidate.quote.market,
-            "selection": candidate.quote.selection,
-            "line": candidate.quote.line,
-            "odds": candidate.quote.odds,
-            "bookmaker": candidate.quote.bookmaker,
-            "model_probability": candidate.model_probability,
-            "implied_probability": candidate.implied_probability,
-            "edge": candidate.edge,
-            "expected_value": candidate.expected_value,
-            "confidence": candidate.confidence,
-            "consensus_bookmakers": candidate.consensus_bookmakers,
-            "consensus_dispersion": candidate.consensus_dispersion,
-            "status": "pending",
-            "outcome": None,
-            "resolved_at": None,
-            "resolution_source": None,
-        }
-    )
-    _write(rows)
-    return True, "Pronóstico registrado para seguimiento."
+
+def register_candidate(candidate: Candidate) -> tuple[bool, str]:
+    prediction_id = offer_candidate(candidate)
+    return register_offer(prediction_id)
 
 
 def pending() -> list[dict[str, Any]]:
@@ -115,12 +139,14 @@ def calibration_buckets(rows: list[dict[str, Any]] | None = None) -> list[dict[s
         if not group:
             continue
         wins = sum(r.get("status") == "won" for r in group)
+        predicted = sum(float(r.get("model_probability", 0)) for r in group) / len(group)
+        actual = wins / len(group)
         buckets.append({
             "range": f"{low}-{high}%",
             "count": len(group),
-            "predicted": sum(float(r.get("model_probability", 0)) for r in group) / len(group),
-            "actual": wins / len(group),
-            "error": (wins / len(group)) - (sum(float(r.get("model_probability", 0)) for r in group) / len(group)),
+            "predicted": predicted,
+            "actual": actual,
+            "error": actual - predicted,
         })
     return buckets
 
