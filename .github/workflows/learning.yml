@@ -1,0 +1,54 @@
+name: Prediction Learning
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 3 hours. Scores are only queried for tracked predictions.
+    - cron: "17 */3 * * *"
+
+concurrency:
+  group: prediction-learning
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Reconcile predictions
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          ODDS_API_KEY_2: ${{ secrets.ODDS_API_KEY_2 }}
+          ODDS_API_KEY_3: ${{ secrets.ODDS_API_KEY_3 }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m scripts.reconcile_predictions
+
+      - name: Persist learning ledger
+        run: |
+          if [ -z "$(git status --porcelain -- data/predictions.json)" ]; then
+            echo "Sin cambios de aprendizaje"
+            exit 0
+          fi
+          git config user.name "bet-value-engine[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
+          git add -- data/predictions.json
+          git commit -m "chore: update prediction learning ledger [skip ci]"
+          git push origin main
