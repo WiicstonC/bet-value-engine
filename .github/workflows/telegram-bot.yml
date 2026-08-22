@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: bet-value-telegram-bot
+  group: telegram-control
   cancel-in-progress: true
 
 jobs:
