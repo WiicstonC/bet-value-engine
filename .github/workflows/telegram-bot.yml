@@ -1,20 +1,20 @@
 name: Bet Value Telegram Bot
 
 on:
-  push:
-    branches: [main]
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
+# One listener at a time. Each run is shorter than the 5-minute schedule,
+# so a new run does not kill the listener that is currently receiving updates.
 concurrency:
   group: telegram-control
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 4
     permissions:
       contents: write
     steps:
@@ -42,7 +42,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_PREANALYSIS_MODEL: gpt-5.6-luna
-          TELEGRAM_POLL_SECONDS: "255"
+          # Leave enough margin for checkout/install/offset persistence before
+          # the next scheduled run. GitHub's shortest schedule interval is 5 min.
+          TELEGRAM_POLL_SECONDS: "150"
         run: python -m scripts.telegram_bot
 
       - name: Persist Telegram offset
