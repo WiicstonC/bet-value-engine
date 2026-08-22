@@ -306,7 +306,9 @@ def main() -> None:
     except Exception as exc:
         print(f"Webhook no disponible: {exc}")
     offset = _load_offset()
-    updates = sender.get_updates(offset=offset, limit=50, timeout=240)
+    # Keep each Actions run short. GitHub's 5-minute schedule is the heartbeat;
+    # a short long-poll avoids a queue of overlapping/late runs.
+    updates = sender.get_updates(offset=offset, limit=100, timeout=15)
     print(f"Telegram updates recibidos: {len(updates)}")
     next_offset = offset
     for update in updates:
