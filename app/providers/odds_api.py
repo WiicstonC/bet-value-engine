@@ -14,19 +14,16 @@ SPORT_KEYS = {
         "soccer_germany_bundesliga", "soccer_france_ligue_one", "soccer_colombia_primera_a",
     ],
     "tennis": [
-        "tennis_atp_aus_open_singles", "tennis_atp_french_open", "tennis_atp_us_open",
-        "tennis_atp_wimbledon", "tennis_atp_indian_wells", "tennis_atp_miami_open",
-        "tennis_atp_monte_carlo_masters", "tennis_atp_madrid_open", "tennis_atp_italian_open",
-        "tennis_atp_canadian_open", "tennis_atp_cincinnati_open", "tennis_atp_shanghai_masters",
-        "tennis_atp_paris_masters", "tennis_atp_china_open", "tennis_atp_barcelona_open",
-        "tennis_atp_halle_open", "tennis_atp_queens_club_champ", "tennis_atp_washington_open",
-        "tennis_atp_dubai", "tennis_atp_qatar_open", "tennis_atp_hamburg_open", "tennis_atp_munich",
-        "tennis_wta_aus_open_singles", "tennis_wta_french_open", "tennis_wta_us_open",
-        "tennis_wta_wimbledon", "tennis_wta_indian_wells", "tennis_wta_miami_open",
-        "tennis_wta_madrid_open", "tennis_wta_italian_open", "tennis_wta_canadian_open",
-        "tennis_wta_cincinnati_open", "tennis_wta_china_open", "tennis_wta_dubai",
-        "tennis_wta_qatar_open", "tennis_wta_bad_homburg_open", "tennis_wta_charleston_open",
-        "tennis_wta_german_open", "tennis_wta_queens_club_champ", "tennis_wta_strasbourg",
+        "tennis_atp_aus_open_singles", "tennis_atp_french_open", "tennis_atp_us_open", "tennis_atp_wimbledon",
+        "tennis_atp_indian_wells", "tennis_atp_miami_open", "tennis_atp_monte_carlo_masters", "tennis_atp_madrid_open",
+        "tennis_atp_italian_open", "tennis_atp_canadian_open", "tennis_atp_cincinnati_open", "tennis_atp_shanghai_masters",
+        "tennis_atp_paris_masters", "tennis_atp_china_open", "tennis_atp_barcelona_open", "tennis_atp_halle_open",
+        "tennis_atp_queens_club_champ", "tennis_atp_washington_open", "tennis_atp_dubai", "tennis_atp_qatar_open",
+        "tennis_atp_hamburg_open", "tennis_atp_munich", "tennis_wta_aus_open_singles", "tennis_wta_french_open",
+        "tennis_wta_us_open", "tennis_wta_wimbledon", "tennis_wta_indian_wells", "tennis_wta_miami_open",
+        "tennis_wta_madrid_open", "tennis_wta_italian_open", "tennis_wta_canadian_open", "tennis_wta_cincinnati_open",
+        "tennis_wta_china_open", "tennis_wta_dubai", "tennis_wta_qatar_open", "tennis_wta_bad_homburg_open",
+        "tennis_wta_charleston_open", "tennis_wta_german_open", "tennis_wta_queens_club_champ", "tennis_wta_strasbourg",
         "tennis_wta_stuttgart_open", "tennis_wta_washington_open", "tennis_wta_wuhan_open",
     ],
 }
@@ -55,6 +52,7 @@ class TheOddsAPIProvider(SportsProvider):
         self._event_odds_cache: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
         self._markets_cache: dict[str, dict[str, set[str]]] = {}
         self._scores_cache: dict[str, list[dict]] = {}
+        self._active_sports_cache: list[dict] | None = None
         self.last_quota_remaining: str | None = None
         self.last_quota_used: str | None = None
         self.last_quota_last: str | None = None
@@ -90,6 +88,22 @@ class TheOddsAPIProvider(SportsProvider):
             raise last_error
         raise RuntimeError("No hay claves de Odds API disponibles.")
 
+    def active_sport_keys(self, sport: str) -> list[str]:
+        """Use the API's active-sports catalog to avoid querying every historical tennis tournament."""
+        try:
+            if self._active_sports_cache is None:
+                data = self._get("/sports", {})
+                self._active_sports_cache = data if isinstance(data, list) else []
+            active = {str(item.get("key")) for item in self._active_sports_cache}
+            configured = SPORT_KEYS.get(sport, [])
+            if sport == "tennis":
+                dynamic = sorted(key for key in active if key.startswith(("tennis_atp_", "tennis_wta_")))
+                return dynamic or configured
+            return [key for key in configured if key in active] or configured
+        except Exception as exc:
+            print(f"No se pudo consultar catálogo activo: {exc}")
+            return SPORT_KEYS.get(sport, [])
+
     @staticmethod
     def _bookmaker_matches(title: str, wanted: str) -> bool:
         title, wanted = title.lower().strip(), wanted.lower().strip()
@@ -100,7 +114,7 @@ class TheOddsAPIProvider(SportsProvider):
 
     def upcoming_events(self, sport: str, start: datetime, end: datetime) -> list[Event]:
         events, seen = [], set()
-        for sport_key in SPORT_KEYS.get(sport, []):
+        for sport_key in self.active_sport_keys(sport):
             try:
                 data = self._get(f"/sports/{sport_key}/events", {})
             except httpx.HTTPStatusError:
@@ -117,7 +131,7 @@ class TheOddsAPIProvider(SportsProvider):
     def live_events(self, sport: str, now: datetime | None = None, lookback_minutes: int = 240) -> list[Event]:
         now = now or datetime.now(timezone.utc)
         events = []
-        for sport_key in SPORT_KEYS.get(sport, []):
+        for sport_key in self.active_sport_keys(sport):
             try:
                 data = self._get(f"/sports/{sport_key}/scores", {"daysFrom": 1})
             except httpx.HTTPStatusError:
@@ -142,7 +156,10 @@ class TheOddsAPIProvider(SportsProvider):
         except httpx.HTTPStatusError:
             self._markets_cache[event.id] = {}
             return {}
-        result = {b.get("title", ""): {m.get("key") for m in b.get("markets", []) if m.get("key")} for b in data.get("bookmakers", []) if isinstance(data, dict)}
+        if not isinstance(data, dict):
+            self._markets_cache[event.id] = {}
+            return {}
+        result = {b.get("title", ""): {m.get("key") for m in b.get("markets", []) if m.get("key")} for b in data.get("bookmakers", [])}
         self._markets_cache[event.id] = result
         return result
 
