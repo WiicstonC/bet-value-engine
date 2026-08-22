@@ -68,7 +68,6 @@ def competition_label(event: Event) -> str:
     }
     if key in labels:
         return labels[key]
-    # Fallback: never expose provider prefixes such as soccer_/basketball_.
     cleaned = raw.replace("soccer_", "").replace("basketball_", "").replace("tennis_", "")
     return cleaned.replace("_", " ").strip().title() or "Competición"
 
@@ -152,3 +151,83 @@ def _chunk_message_with_markup(message: str, markup: dict[str, Any] | None, limi
 
 def format_daily_digest(events: list[Event], timezone_name: str, max_events: int = 45, preanalysis: dict[str, str] | None = None) -> tuple[list[str], list[dict[str, Any] | None]]:
     """Build compact Telegram cards. Selected events get their own deep-analysis button."""
+    local_tz = ZoneInfo(timezone_name)
+    ordered = sorted(events, key=lambda event: event.start_time)[:max_events]
+    total = len(events)
+    messages: list[str] = [
+        "📅 AGENDA DEPORTIVA — RESTO DEL DÍA", "", f"Eventos encontrados: {total}",
+        "🧠 Preanálisis cualitativo: activo", "💳 Cuotas todavía NO consultadas.",
+    ]
+    markups: list[dict[str, Any] | None] = [None]
+    selected_ids: set[str] = set()
+
+    if preanalysis:
+        selected = sorted(((event, preanalysis[event.id]) for event in ordered if event.id in preanalysis), key=lambda pair: pair[0].start_time)
+        selected_ids = {event.id for event, _ in selected}
+        for event, analysis in selected:
+            messages.append(
+                f"{competition_flag(event)} {competition_label(event)}\n"
+                f"{event.home} vs {event.away}\n\n"
+                f"{analysis}\n\n"
+                "👇 Si este partido te interesa, pulsa el botón para hacer el análisis profundo."
+            )
+            markups.append(deep_button(event))
+
+    remainder_lines = ["📋 RESTO DE LA AGENDA", ""]
+    remainder_events = [event for event in ordered if event.id not in selected_ids]
+    for event in remainder_events:
+        local = event.start_time.astimezone(local_tz)
+        remainder_lines.append(
+            f"{competition_flag(event)} {local.strftime('%d/%m %H:%M')} | "
+            f"{event.home} vs {event.away} | {competition_label(event)}"
+        )
+    if not remainder_events:
+        remainder_lines.append("Todos los eventos seleccionados aparecen arriba para revisión.")
+    if total > max_events:
+        remainder_lines += ["", f"…y {total - max_events} eventos más."]
+    remainder = _chunk_text(remainder_lines)
+    messages.extend(remainder)
+    markups.extend([None] * len(remainder))
+    return messages, markups
+
+
+def alert_due(candidate: Candidate, alert_config: AlertConfig, scan_interval_minutes: int) -> bool:
+    now = datetime.now(timezone.utc)
+    minutes_to_start = (candidate.event.start_time - now).total_seconds() / 60
+    half_window = max(scan_interval_minutes / 2, 2)
+    return any(target - half_window <= minutes_to_start <= target + half_window for target in alert_config.minutes_before_start)
+
+
+class AlertManager:
+    def __init__(self, sender: TelegramAlertSender, config: EngineConfig):
+        self.sender = sender
+        self.config = config
+
+    def notify(self, candidates: list[Candidate]) -> int:
+        sent = 0
+        for candidate in candidates:
+            if sent >= self.config.alerts.max_alerts_per_scan:
+                break
+            if not alert_due(candidate, self.config.alerts, self.config.scan_interval_minutes):
+                continue
+            if self.sender.send(format_candidate(candidate, self.config.timezone)):
+                sent += 1
+        return sent
+
+    def notify_live(self, candidates: list[Candidate], incident_text: str | None = None) -> int:
+        sent = 0
+        for candidate in candidates[: self.config.live.max_alerts_per_run]:
+            if self.sender.send(format_live_candidate(candidate, self.config.timezone, incident_text)):
+                sent += 1
+        return sent
+
+    def send_daily_digest(self, events: list[Event], preanalysis: dict[str, str] | None = None) -> int:
+        messages, markups = format_daily_digest(events, self.config.timezone, self.config.daily_digest.max_events_per_message, preanalysis)
+        expanded_messages: list[str] = []
+        expanded_markups: list[dict[str, Any] | None] = []
+        for message, markup in zip(messages, markups):
+            parts = _chunk_message_with_markup(message, markup)
+            for part_message, part_markup in parts:
+                expanded_messages.append(part_message)
+                expanded_markups.append(part_markup)
+        return self.sender.send_many(expanded_messages, expanded_markups)
