@@ -49,6 +49,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_HEARTBEAT: ${{ github.event_name == 'push' }}
         run: python -m scripts.telegram_control
 
       - name: Persist Telegram update offset
